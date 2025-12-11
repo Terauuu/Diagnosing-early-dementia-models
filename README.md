@@ -8,16 +8,16 @@ Diagnosing Alzheimer’s disease early is challenging because early brain change
 
 This project supports the first two stages of the Well Pathway for Dementia by developing and evaluating five machine learning classification models to determine which achieves the highest accuracy in predicting dementia status (demented vs. nondemented) based on clinical and demographic metrics. It also includes exploratory data analysis (EDA), visualisations, and interpretation of factors associated with dementia status.
 
-The original study is available at the following link: [https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full]
+The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full)
 
 
 # Dataset Overview & Structure
 
-The dataset used for this project is the Longitudinal MRI Data in Nondemented and Demented Older Adults, available at [https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers].
+The dataset used for this project is the Longitudinal MRI Data in Nondemented and Demented Older Adults, available at [here](https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers)
 
 Cross-sectional MRI database contains 436 records, and its structure is shown below. These features represent known biomarkers associated with Alzheimer’s pathology.
 
-Before beginning the analysis, several preliminary checks were performed to ensure data accuracy, including handling missing values, reviewing attribute definitions, and generating descriptive statistical summaries. A detailed summary of these diagnostics can be found here: [131/Datasets.pdf].
+Before beginning the analysis, several preliminary checks were performed to ensure data accuracy, including handling missing values, reviewing attribute definitions, and generating descriptive statistical summaries. A detailed summary of these diagnostics can be found [here](./Datasets.pdf).
 
 ![Alt text](datastructure.jpg)
 
@@ -32,7 +32,7 @@ The **XGBoost model** is the strongest and most clinically reliable candidate fo
 
 This model achieved a competitive overall Accuracy of 89.36%, a peak score shared with the Decision Tree (DT) model. The decisive advantage is XGBoost's superior Recall of $0.88$, which is vital because it minimizes False Negatives (the critical error of missing a diagnosis). While DT maintains slightly higher Precision ($0.87$), XGBoost delivers a strong and reliable Precision of $0.82$. This exceptional Recall score makes minimizing False Negatives the deciding factor for safety and reliability in early-stage Alzheimer's disease detection, ensuring that patients and their caregivers can proceed immediately with crucial early intervention or treatment planning.
 
-Detailed findings and insights(Visualizations & Confusion matrices) can be found here: [modelperformance.pdf]
+Detailed findings and insights (Visualizations & Confusion matrices) can be found [here](./modelperformance.pdf)
 
 * A limitation of this study is that dementia status was defined solely from CDR rather than a full clinical diagnostic protocol, and observations with missing CDR values were excluded because a valid outcome label could not be assigned. In addition, the dataset is relatively small, so the resulting model estimates and accuracy metrics should be interpreted with caution
 
