@@ -42,62 +42,45 @@ This model achieved a competitive overall Accuracy of $89.36\%$, a peak score sh
 
 Detailed findings and insights (Visualizations & Confusion matrices) can be found [here](./Report-pdf/modelperformance.pdf).
 
-Note: A limitation of this study is that dementia status was defined solely from CDR rather than a full clinical diagnostic protocol, and observations with missing CDR values were excluded because a valid outcome label could not be assigned. In addition, the dataset is relatively small, so the resulting model estimates and accuracy metrics should be interpreted with caution
-
 
 # Insights Deep Dive
-### Category 1:
 
-* **Main insight 1.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
+### Exploratory Data Analysis Summary:
+
+* Females are more represented in the dataset, with similar proportions across dementia status.
   
-* **Main insight 2.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
+* Nondemented patients show higher whole-brain volume (nWBV), stronger MMSE performance, and greater education levels (Educ) relative to demented patients.
   
-* **Main insight 3.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
+* A noticeably larger proportion of individuals with dementia fall within the 75–80 age range compared to the nondemented group.
+
+A full set of detailed visualizations and findings for dementia-related variables is available [here](./Report-pdf/EDA.pdf).
+
+
+### Modeling Pipeline Summary:
+
+* **Preprocessing** Non-predictive identifiers (ID, Hand, Visits, Delay) and the outcome-defining variable CDR were removed to avoid information leakage and overfitting.
+
+* **Imputation** Rows with missing CDR were removed, which also eliminated missing Educ and MMSE, and the remaining 19 SES values were imputed using KNN ($k=5$).
+
+* **Train–Test Split** An 80/20 train–test split was used, and all classification models were trained with 10-fold cross-validation. 
   
-* **Main insight 4.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
+* **Modeling** Five classification models were evaluated: Decision Tree (DT), Random Forest (RF), Support Vector Machine (SVM), XGBoost, and Logistic Regression (baseline).
 
-[Visualization specific to category 1]
+* **Feature Importance** The top three predictors identified by both Random Forest and XGBoost models are MMSE, nWBV, and Age.
 
-
-### Category 2:
-
-* **Main insight 1.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 2.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 3.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 4.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-
-[Visualization specific to category 2]
-
-
-### Category 3:
-
-* **Main insight 1.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 2.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 3.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 4.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-
-[Visualization specific to category 3]
-
-
-### Category 4:
-
-* **Main insight 1.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 2.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 3.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-  
-* **Main insight 4.** More detail about the supporting analysis about this insight, including time frames, quantitative values, and observations about trends.
-
-[Visualization specific to category 4]
-
+A complete description of the methods and model implementation, ncluding R code, is available [here](./Report-pdf/Method.pdf).
 
 
 # Future Improvements & Recommendations:
+
+The EDA section can be further strengthened by incorporating findings from additional studies on Alzheimer’s disease, including research on pathology, risk factors, and the relationship between aging and cognitive decline. As future work, integrating evidence from the scientific literature would allow for more rigorous interpretation of exploratory patterns and more robust, evidence-based conclusions.
+
+MMSE, nWBV, and Age are all clinically relevant attributes for detecting Alzheimer’s disease. Additional studies could expand on these findings by identifying more features that could further improve early detection and intervention strategies.
+
+This study used the same dataset as the original paper but applied a slightly different approach to handling missing values, which may explain minor differences in model performance. XGBoost still demonstrated strong and stable predictive behavior across evaluation metrics, indicating that it remains a promising model for further refinement. Further tuning of the model may improve Recall and Accuracy and contributing to more reliable early detection of dementia.
+
+### Limitations
+
+A limitation of this study is that dementia status was defined solely from CDR rather than a full clinical diagnostic protocol, and observations with missing CDR values were excluded because a valid outcome label could not be assigned. In addition, the dataset is relatively small, so the resulting model estimates and accuracy metrics should be interpreted with caution
+
 
