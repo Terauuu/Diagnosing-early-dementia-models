@@ -8,12 +8,12 @@ Diagnosing Alzheimer’s disease early is challenging because early brain change
 
 This project supports the first two stages of the Well Pathway for Dementia by developing and evaluating five machine learning classification models to determine which achieves the highest accuracy in predicting dementia status (demented vs. nondemented) based on clinical and demographic metrics. It also includes exploratory data analysis (EDA), visualisations, and interpretation of factors associated with dementia status.
 
-The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full)
+The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full).
 
 
 # Dataset Overview & Structure
 
-The dataset used for this project is the Longitudinal MRI Data in Nondemented and Demented Older Adults, available at [here](https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers)
+The dataset used for this project is the Longitudinal MRI Data in Nondemented and Demented Older Adults, available at [here](https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers).
 
 Cross-sectional MRI database contains 436 records, and its structure is shown below. These features represent known biomarkers associated with Alzheimer’s pathology.
 
