@@ -44,7 +44,7 @@ The dataset used for this project is the Cross-sectional MRI Data in Nondemented
 
 This model achieved a competitive overall Accuracy of $89.36\%$, a peak score shared with the Decision Tree (DT) model. The decisive advantage is XGBoost's superior Recall of $0.88$, which is vital because it minimizes False Negatives (the critical error of missing a diagnosis). While DT maintains slightly higher Precision ($0.87$), XGBoost delivers a strong and reliable Precision of $0.82$. This exceptional Recall score makes minimizing False Negatives the deciding factor for safety and reliability in early-stage Alzheimer's disease detection, ensuring that patients and their caregivers can proceed immediately with crucial early intervention or treatment planning.
 
-Detailed findings and insights (Visualizations & Confusion Matrices) can be found [here](./Report-pdf/ModelPerformance.pdf).
+Detailed findings and insights (Visualizations & Confusion Matrices) can be found [here](./Report-pdf/modelperformance.pdf).
 
 
 # Insights Deep Dive
