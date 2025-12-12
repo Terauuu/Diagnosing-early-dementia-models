@@ -1,0 +1,274 @@
+---
+title: "Exploratory Analysis of Dementia-Related Variables"
+author: "Linglu Li"
+output:
+  pdf_document:
+    fig_caption: true
+  header-includes: \usepackage{float}
+  html_document:
+    df_print: paged
+---
+```{r, include = FALSE}
+library(dplyr) 
+library(purrr)
+library(ggplot2)
+library(VIM)
+library(patchwork)
+```
+The original paper conducted exploratory data analysis (EDA) on the longitudinal MRI dataset, which includes the variable Group with three categories: nondemented, converted, and demented. The longitudinal dataset contains 150 older adults followed across multiple visits (373 MRI sessions), meaning observations are not independent. However, the predictive modelling in the paper was based on the cross-sectional MRI dataset. For consistency, the EDA presented below is therefore based on the cross-sectional dataset, with the exception of Figure 4, which analyses MMSE scores for the nondemented, converted, and demented groups. This figure is retained because it shows similar trends to the longitudinal dataset, particularly for features associated with dementia status.
+
+```{r, include = FALSE}
+longitutional <- read.csv("/Users/tera/Desktop/PSTAT/131/project/longitudinal.csv")
+cross <- read.csv("/Users/tera/Desktop/PSTAT/131/project/oasis_cross-sectional.csv")
+# missing values
+ks <- c(3, 5, 7)
+results <- data.frame(k = ks, error = NA)
+df_complete <- longitutional[!is.na(longitutional$SES), ]
+set.seed(123)
+
+for (i in seq_along(ks)) {
+  k_val <- ks[i]
+  temp <- df_complete
+  # 2. Randomly hide 20% of SES values
+  idx <- sample(which(!is.na(temp$SES)), size = floor(0.2 * nrow(temp)))
+  true_ses <- temp$SES[idx]      # Save true SES
+  temp$SES[idx] <- NA            # Mask
+  # 3. Impute with kNN
+  temp_imp <- kNN(temp, variable = "SES", k = k_val)
+  # 4. Extract imputed values
+  imputed_ses <- temp_imp$SES[idx]
+  # 5. Compute error (classification error rate)
+  results$error[i] <- mean(imputed_ses != true_ses)
+}
+best_k <- results$k[which.min(results$error)]
+# Missing values
+df_imputed <- kNN(longitutional, variable = "SES", k = best_k)
+df_imputed$SES_imp <- NULL
+df_imputed2 <- kNN(df_imputed, variable = "MMSE", k = 5)
+df_imputed2$MMSE_imp <- NULL
+longi_clean <-df_imputed2 %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(
+    Subject.ID = as.character(Subject.ID),
+    MRI.ID     = as.character(MRI.ID)
+  ) 
+
+# df_cdr <- longi_clean %>%filter(!is.na(CDR)) %>% mutate(CDR = factor(CDR, levels = sort(unique(CDR))))
+
+df_2group <- longi_clean %>%
+  mutate(Group2 = ifelse(Group %in% c("Converted", "Demented"),
+                         "Demented", "Nondemented")) %>%
+  mutate(Group2 = factor(Group2, levels = c("Nondemented", "Demented")))
+
+
+cross2 <- cross %>%
+  mutate(
+    Group2 = ifelse(CDR == 0, "Nondemented", "Demented"),
+    Group2 = factor(Group2, levels = c("Nondemented", "Demented"))
+  ) %>%
+  # Remove ID + other columns don’t want as predictors
+  select(M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF, Group2)
+
+
+set.seed(1)
+# Impute the 3 variables using the rest as predictors
+cross2_imp <- kNN(
+  cross2,
+  variable = c("Educ", "SES", "MMSE"),
+  k = 5     
+)
+
+# VIM adds *_imp indicator columns
+cross2_imp <- cross2_imp %>%
+  select(-ends_with("_imp"))%>%
+  filter(!is.na(Group2))
+```
+
+Figure 1 shows that female participants make up a larger portion of both the nondemented and demented groups; however, the relative proportions of males and females remain fairly consistent across groups, suggesting no strong gender differences in dementia status within this dataset.
+
+\
+
+```{r fig-gender-bar, echo = FALSE, fig.cap = "Analysis of demented and non-demented rate based on gender. ", fig.width=13, fig.height=8, fig.pos="H"}
+ggplot(cross2_imp, aes(x = Group2, fill = M.F)) +
+  geom_bar(position = "stack") +
+  scale_fill_manual(values = c("steelblue", "darkorange")) +
+  labs(
+    title = "Gender and Demented Rate",
+    x = "Group",
+    y = "Number of Patients",
+    fill = "Gender"
+  ) +
+    theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5),
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title = element_text(size = 14),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA)
+  )
+
+```
+
+
+\newpage
+
+Figure 2.C shows a clear leftward shift in Normalized Whole Brain Volume (nWBV) among demented patients. The mean nWBV for demented patients was 0.722, compared with 0.769 in the nondemented group, indicating greater loss of brain tissue relative to nondemented individuals.
+\
+
+
+```{r fig-other, echo=FALSE, fig.cap="(A-C) Analysis of ASF, eTIV, and nWBV for Demented and Non-demented groups of patients.",fig.width = 25, fig.height=23, fig.pos="H"}
+
+
+plot_density_panel <- function(data, vars, group_var = "Group2",
+                               colors = NULL,
+                               alpha = 0.35) {
+  
+  # Make sure group variable is a factor
+  data[[group_var]] <- as.factor(data[[group_var]])
+  levs <- levels(data[[group_var]])
+  
+  # If no colors provided, pick some defaults
+  if (is.null(colors)) {
+    # give each level a distinct color
+    colors <- setNames(RColorBrewer::brewer.pal(length(levs), "Set1")[seq_along(levs)],
+                       levs)
+  } else {
+    # ensure names(colors) match levels of group_var
+    if (is.null(names(colors))) {
+      stop("Please name the colors with the levels of the grouping variable.")
+    }
+  }
+  
+  plots <- vector("list", length(vars))
+  
+  for (i in seq_along(vars)) {
+    var <- vars[i]
+    
+    p <- ggplot(data, aes(x = .data[[var]],
+                          color = .data[[group_var]],
+                          fill  = .data[[group_var]])) +
+      geom_density(alpha = alpha, linewidth = 0.8) +
+      scale_fill_manual(values = colors) +
+      scale_color_manual(values = colors) +
+      labs(
+        x = var,
+        y = "Density",
+        color = "Group",
+        fill  = "Group"
+      ) +
+      ggtitle(LETTERS[i]) +   # A, B, C labels
+      theme_classic(base_size = 16) +
+      theme(
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.border = element_rect(colour = "black", fill = NA),
+        axis.text.x = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0),
+        legend.position = "right"
+      )
+    
+    plots[[i]] <- p
+  }
+  
+  # stack panels vertically: A on top, then B, then C
+  wrap_plots(plots, ncol = 1)
+}
+
+fig3 <- plot_density_panel(cross2_imp,
+                           vars = c("ASF", "eTIV", "nWBV"),
+                           group_var = "Group2",
+                           colors = c("Nondemented"="#4A90E2",
+                                      "Demented"="#F5A26C"))
+fig3
+```
+
+Figure 3A shows that the EDUC distributions differ between groups. The demented group’s density is concentrated at lower education levels, with a peak at lower EDUC categories, whereas the nondemented group peaks at higher EDUC categories. This indicates a leftward shift and overall lower educational attainment among individuals with dementia.
+
+This pattern is consistent with prior work showing that education is an important protective factor for late-life cognition. For example, the Lancet Commission on dementia (2020) identified low education as one of the major modifiable risk factors for dementia and estimated that increasing early-life education could prevent around 7% of dementia cases worldwide. Similarly, A recent cross-sectional study from China (Zhong et al., 2024) also reported that higher education was linked to a significantly lower risk of cognitive impairment, even after controlling for age, sex, occupation type, cognitive activity, and brain reserve.
+
+Figure 3B shows the age distribution for demented and nondemented participants. A noticeably larger proportion of individuals with dementia fall within the 70–80 age range compared to the nondemented group, indicating that dementia prevalence increases with advancing age.
+
+Research by Ritchie and Kildea (1995) suggests that dementia behaves like an age-related condition: prevalence increases sharply through late life but then levels off at about 40% after age 95, rather than continuing to rise indefinitely (Ritchie & Kildea, 1995). Although Kavitha suggests that the low number of very old demented individuals reflects reduced survival among those with dementia, another explanation is that people who reach very old ages without cognitive decline may have inherently lower dementia risk, which helps explain the small number of dementia cases in the 90+ population.
+
+```{r fig-age, echo=FALSE, fig.cap="Analysis on level of Education and Age.", fig.width = 25, fig.height=18, fig.pos="H"}
+fig4 <- plot_density_panel(cross2_imp,
+                           vars = c("Educ", "Age"),
+                           group_var = "Group2",
+                           colors = c("Nondemented"="#4A90E2",
+                                      "Demented"="#F5A26C"))
+fig4
+```
+
+
+\
+
+Figure 4 shows that the non-demented group had much higher MMSE (Mini-Mental State Examination) scores than those with dementia.
+
+\newpage
+
+```{r fig-group-den, echo=FALSE, fig.cap="Analysis of MMSE scores for demented, converted, and non-demented groups of patients.", fig.width=13, fig.height=5, fig.pos="H"}
+ggplot(df_2group, aes(x = MMSE, fill = Group)) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(
+    values = c(
+      "Nondemented" = "#4C9BE8",  # blue
+      "Demented"    = "#F4A261",  # orange
+      "Converted"   = "#81C784"   # green
+    )
+  ) +
+  labs(
+    x = "MMSE",
+    y = "Density",
+    fill = "Group"
+  ) +
+  theme_classic(base_size = 16) +   # << all white, no grid
+  theme(
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA),
+    axis.text.x      = element_text(angle = 90, vjust = 0.5),
+    plot.title       = element_text(hjust = 0.5, size = 16),
+    axis.title       = element_text(size = 14),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key       = element_rect(fill = "white", color = NA),
+    legend.position = "right",
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 14),
+    legend.key.size = unit(0.6, "lines"),   # shrink key size
+    legend.spacing.y = unit(0.2, "lines"), # reduce vertical space
+    legend.box.margin = margin(0, 0, 0, 0),
+  )
+
+```
+
+# Reference
+
+Zhong, T., Li, S., Liu, P., Wang, Y., & Chen, L. (2024).
+The impact of education and occupation on cognitive impairment: A cross-sectional study in China.
+Frontiers in Aging Neuroscience, 16, 1435626. https://doi.org/10.3389/fnagi.2024.1435626
+
+Livingston G, et al. (2020). Dementia prevention, intervention, and care: 2020 report of the Lancet Commission. 
+The Lancet.
+
+Ritchie, K., & Kildea, D. (1995).
+Is senile dementia “age-related” or “ageing-related”? Evidence from a meta-analysis of dementia prevalence in the oldest old.
+The Lancet, 346(8980), 931–934. https://doi.org/10.1016/S0140-6736(95)91556-7
+
+Alatrany, A. S., Khan, W., Hussain, A., & others. (2024).
+An explainable machine learning approach for Alzheimer’s disease classification.
+Scientific Reports, 14, 2637. https://doi.org/10.1038/s41598-024-51985-w
+
+World Health Organization. (2019).
+Risk reduction of cognitive decline and dementia: WHO guidelines.
+World Health Organization.
+
+NHS England. (2016).
+The Well Pathway for Dementia.
+https://www.england.nhs.uk/mentalhealth/wp-content/uploads/sites/29/2016/03/dementia-well-pathway.pdf
+
+Rasmussen, J., & Langerman, H. (2019).
+Alzheimer’s disease: Why we need early diagnosis.
+Degenerative Neurology and Neuromuscular Disease, 9, 123–130.
+https://doi.org/10.2147/DNND.S228939

@@ -1,0 +1,636 @@
+---
+title: "Performance Evaluation of Early-Stage Dementia Prediction Models"
+author: "Linglu Li"
+output:
+  pdf_document:
+    latex_engine: xelatex  
+    toc: false
+    number_sections: false
+    fig_width: 6
+    fig_height: 3
+---
+
+```{r, include=FALSE}
+library(tidyr)
+library(readxl)
+library(MASS)
+library(dplyr) 
+library(purrr)
+library(ggplot2)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(VIM)
+library(tree)
+library(reshape2)
+library(randomForest)
+library(gbm)
+library(ISLR)
+library(caret)
+library(xgboost)
+library(data.table)
+```
+
+```{r, include = FALSE}
+# not used
+longitutional <- read.csv("/Users/tera/Desktop/PSTAT/131/project/longitudinal.csv")
+
+ks <- c(3, 5, 7)
+results <- data.frame(k = ks, error = NA)
+df_complete <- longitutional[!is.na(longitutional$SES), ]
+set.seed(123)
+
+for (i in seq_along(ks)) {
+  k_val <- ks[i]
+  temp <- df_complete
+  # Randomly hide 20% of SES values
+  idx <- sample(which(!is.na(temp$SES)), size = floor(0.2 * nrow(temp)))
+  true_ses <- temp$SES[idx]      # Save true SES
+  temp$SES[idx] <- NA            
+  # Impute with kNN
+  temp_imp <- kNN(temp, variable = "SES", k = k_val)
+  # Extract imputed values
+  imputed_ses <- temp_imp$SES[idx]
+  # Compute error (classification error rate)
+  results$error[i] <- mean(imputed_ses != true_ses)
+}
+best_k <- results$k[which.min(results$error)]
+# Missing values
+df_imputed <- kNN(longitutional, variable = "SES", k = best_k)
+df_imputed$SES_imp <- NULL
+df_imputed2 <- kNN(df_imputed, variable = "MMSE", k = 5)
+df_imputed2$MMSE_imp <- NULL
+longi_clean <-df_imputed2 %>%
+  mutate(across(where(is.character), as.factor)) %>%
+  mutate(
+    Subject.ID = as.character(Subject.ID),
+    MRI.ID     = as.character(MRI.ID)
+  ) 
+df_2group <- longi_clean %>%
+  mutate(Group2 = ifelse(Group %in% c("Converted", "Demented"),
+                         "Demented", "Nondemented")) %>%
+  mutate(Group2 = factor(Group2, levels = c("Nondemented", "Demented")))%>%
+  # Make sure visits are in order within each subject
+  arrange(Subject.ID, Visit) %>%
+  group_by(Subject.ID) %>%
+  mutate(row_in_subj = row_number()) %>%
+  #  keep row 2 if it exists； otherwise row 1 (for subjects with only 1 visit)
+  filter(row_in_subj == 2 | (row_in_subj == 1 & n() == 1)) %>%
+  ungroup() %>%
+  select(-row_in_subj)
+
+
+```
+
+```{r, include = FALSE}
+cross <- read.csv("/Users/tera/Desktop/PSTAT/131/project/oasis_cross-sectional.csv")
+cross2 <- cross %>%
+  mutate(
+    Group2 = ifelse(CDR == 0, "Nondemented", "Demented"),
+    Group2 = factor(Group2, levels = c("Nondemented", "Demented"))
+  ) %>%
+  select(M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF, Group2)
+set.seed(1)
+# Impute the 3 variables using the rest as predictors
+cross2_imp <- kNN(
+  cross2,
+  variable = c("Educ", "SES", "MMSE"),
+  k = 5      # you can change to your tuned k if you want
+)
+
+# VIM adds *_imp indicator columns; drop them
+cross2_imp <- cross2_imp %>%
+  select(-ends_with("_imp"))%>%
+  filter(!is.na(Group2))
+```
+
+
+
+```{r splitting, include = FALSE}
+set.seed(213)
+K <-10
+
+# One 80/20 split
+train1 = sample(nrow(df_2group), 0.8*nrow(df_2group))
+train2 = sample(nrow(cross2_imp), 0.8*nrow(cross2_imp)) 
+long2.train = df_2group[train1, ] # notused
+long2.test = df_2group[-train1,]  # notused
+
+train_dat = cross2_imp[train2, ]
+test_dat = cross2_imp[-train2,]
+
+y_train <- train_dat$Group2
+y_test <- test_dat$Group2
+
+# Set num of folds
+train_control <- trainControl(
+  method = "cv",
+  number = 10,
+  verboseIter = TRUE,
+  classProbs = TRUE
+)
+```
+
+```{r, include=FALSE}
+set.seed(1)
+
+logit_model <- train(
+  Group2 ~ .,
+  data      = train_dat,
+  method    = "glm",
+  family    = "binomial",
+  trControl = train_control
+)
+
+logit_pred <- predict(logit_model, test_dat)
+logit_conf <- confusionMatrix(logit_pred, test_dat$Group2)
+logit_cv_acc <- max(logit_model$results$Accuracy)
+
+```
+
+
+```{r include = FALSE }
+# with two group notused
+tree.long2 = tree(Group2~. - Subject.ID - MRI.ID - Hand - Group-CDR, data = df_2group)
+
+#draw.tree(tree.long2, nodeinfo=TRUE, cex = 0.4)
+# title("Classification Tree Predicting Dementia Status (2 groups)", cex = 0.8)
+
+tree.longtrain2 <- tree(Group2~. - Subject.ID - MRI.ID - Hand - Group - CDR, data = long2.train)
+  
+# Cross-Validation for tree
+cv_tree2 <- cv.tree(tree.longtrain2, FUN = prune.misclass, K = 5)
+plot(cv_tree2)
+
+best_size2 <- cv_tree2$size[which.min(cv_tree2$dev)]
+
+
+# Plot size vs. cross-validation error rate
+plot(cv_tree2$size , cv_tree2$dev, type="b", 
+     xlab = "Number of leaves, \'best\'", ylab = "CV Misclassification Error",
+     col = "red", main="CV (2-group)")
+abline(v=best_size2, lty=2)
+# Add lines to identify complexity parameter
+min.error2 = which.min(cv_tree2$dev) # Get minimum error index
+abline(h = cv_tree2$dev[min.error2],lty = 2)
+
+pruned_tree2 <- prune.misclass(tree.longtrain2, best=best_size2)
+plot(pruned_tree2)
+text(pruned_tree2, pretty = 0, col = "blue", cex = .5)
+title("Pruned tree of size 2")
+
+```
+
+```{r DTmodel,include = FALSE}
+tree_grid <- expand.grid(cp = seq(0.0001, 0.05, length.out = 30))
+
+set.seed(1)
+tree_model <- train(
+  Group2 ~ .,
+  data = train_dat,
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid  = tree_grid,)
+```
+
+```{r tree-conf, include = F}
+tree_pred <- predict(tree_model, newdata = test_dat)
+tree_conf <- confusionMatrix(tree_pred, test_dat$Group2)
+tree_acc <- tree_conf$overall["Accuracy"]
+best_cp <- tree_model$bestTune$cp
+tree_cv_acc <- tree_model$results$Accuracy[
+  tree_model$results$cp == best_cp]
+```
+
+
+```{r rf-fold,include= FALSE}
+set.seed(1)
+
+rf_model <- train(
+  Group2 ~ . ,
+  data      = train_dat,
+  method    = "rf",
+  trControl = train_control,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE)
+```
+
+```{r rf-conf, include = F}
+rf_pred <- predict(rf_model, newdata = test_dat)
+rf_cv_acc <- rf_model$results$Accuracy[ rf_model$results$mtry == rf_model$bestTune$mtry ] # CV accuracy
+
+rf_conf <- confusionMatrix(rf_pred, test_dat$Group2)
+rf_acc <- rf_conf$overall["Accuracy"]
+```
+
+
+
+```{r RandomForest,  include = F}
+# NotUsed
+set.seed(1)
+
+rf_model0 <- randomForest(
+  Group2 ~ . - Subject.ID - MRI.ID - Hand - Group - CDR,
+  data      = long2.train,
+  ntree     = 500,    # number of trees
+  mtry      = 3,      # number of variables tried at each split (you can tune this)
+  importance = TRUE   # to look at variable importance later
+)
+
+# varImpPlot(rf_model)
+```
+
+
+```{r XGboosting, include = FALSE}
+grid_tune <- expand.grid(
+  nrounds = c(500, 1000, 1500), # number of trees
+  max_depth = c(2,4,6),
+  eta = 0.1, #learning rate
+  gamma = 0, # pruning draft
+  colsample_bytree = 1, #subsample ratio of col for tree
+  min_child_weight = 1, # the larger the more conservative the model; can be used as a stop
+  subsample = 1 # used to prevent overfitting by sampling x% train
+)
+
+# Drop factor predictors that have only 1 level
+# is_bad_factor <- sapply(train_dat, function(v) is.factor(v) && nlevels(v) < 2)
+# train_dat <- train_dat[, !is_bad_factor]
+```
+
+```{r xgb-fold,include = FALSE}
+set.seed(1)
+
+xgb_model <- train(
+  Group2 ~ .,
+  data      = train_dat,
+  method    = "xgbTree",
+  trControl = train_control,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE
+)
+```
+
+```{r xgb-conf, include = FALSE}
+xgb_pred <- predict(xgb_model, newdata = test_dat)
+xgb_conf <- confusionMatrix(xgb_pred, test_dat$Group2)
+xgb_accu <- xgb_conf$overall["Accuracy"]
+
+best_pars <- xgb_model$bestTune
+xgb_cv_acc <- xgb_model$results$Accuracy[
+  apply(xgb_model$results[, names(best_pars)], 1, function(row)
+    all(row == best_pars))
+]
+```
+
+```{r SVM, include = FALSE}
+set.seed(1)
+
+svm_grid <- expand.grid(
+  C     = c(0.1, 0.5, 1, 2, 5, 10),
+  sigma = c(0.001, 0.005, 0.01, 0.02, 0.05)
+)
+
+svm_model <- train(
+  Group2 ~ .,
+  data       = train_dat,
+  method     = "svmRadial",
+  trControl  = train_control,
+  preProcess = c("center", "scale"), 
+  tuneGrid   = svm_grid,
+  metric     = "Accuracy"
+)
+```
+
+```{r, include = FALSE}
+svm_pred <- predict(svm_model, newdata = test_dat)
+svm_conf <- confusionMatrix(svm_pred, test_dat$Group2)
+svm_acc <- svm_conf$overall["Accuracy"]
+best_C     <- svm_model$bestTune$C
+best_sigma <- svm_model$bestTune$sigma
+
+svm_cv_acc <- svm_model$results$Accuracy[
+  svm_model$results$C == best_C &
+  svm_model$results$sigma == best_sigma
+]
+```
+# Evaluation Metrics
+
+The Table 1 shows the performance of five different classifier models: Decision Tree, Random Forest, Support Vector Machine (SVM), XGBoost, and Logistic Regression. The comparison is based on the following metrics:
+
+- **Accuracy**: The proportion of correctly classified result from the total instances.
+\
+- **Precision**: The ratio of correctly predicted positive rate to the total predicted positive rates. A good classifier close to value 1.
+\
+- **Recall**: The true positive rate. A good classifier close to value 1.
+\
+* **F1 Score**: The weighted average of Recall and Precision, which balances both metrics.
+
+The SVM and Logistic Regression models performed the worst in identifying actual dementia patients, as indicated by their lowest Recall of $0.75$. This means they only correctly identified $75\%$ of the actual dementia cases in the test set, leading to the highest proportion of misclassified dementia patients. The model best at correctly identifying actual dementia cases is XGBoost with a Recall of $0.88$. 
+
+XGBoost also ties with the Decision Tree for the highest overall Accuracy ($89.36\%$), with each model reflecting a beneficial aspect of the Precision–Recall trade-off. The Decision Tree offers higher Precision ($0.87$), effectively reducing False Positives (i.e., fewer healthy patients are misdiagnosed). XGBoost, on the other hand, excels at capturing true dementia cases, reaching a Recall of ($0.88$) while maintaining solid Precision ($0.82$).
+
+XGBoost is the recommended model because its high Recall minimizes the risk of missed diagnoses, making it well-suited for clinical decision-making. Although its Precision is slightly lower, its strong ability to avoid false negatives makes it the safest and most reliable choice for detecting disease.
+
+```{r, echo=FALSE, message=FALSE, warning =FALSE}
+compute_metrics <- function(pred, truth) {
+  
+  cm <- confusionMatrix(pred, truth, positive = "Demented")
+  
+  acc  <- cm$overall["Accuracy"]
+  prec <- cm$byClass["Precision"]
+  rec  <- cm$byClass["Recall"]
+  f1   <- cm$byClass["F1"]
+  
+  return(c(Accuracy = acc,
+           Precision = prec,
+           Recall = rec,
+           F1 = f1))
+}
+
+# Use the actual test labels from test_dat
+tree_metrics  <- compute_metrics(tree_pred,  test_dat$Group2)
+rf_metrics    <- compute_metrics(rf_pred,    test_dat$Group2)
+svm_metrics   <- compute_metrics(svm_pred,   test_dat$Group2)
+xgb_metrics   <- compute_metrics(xgb_pred,   test_dat$Group2)
+logit_metrics <- compute_metrics(logit_pred, test_dat$Group2)
+
+results_table <- rbind(
+  "Decision Tree" = tree_metrics,
+  "Random Forest" = rf_metrics,
+  "SVM"           = svm_metrics,
+  "XGBoost"       = xgb_metrics,
+  "Logistic Reg." = logit_metrics
+)
+
+colnames(results_table) <- c("Accuracy", "Precision", "Recall", "F1")
+results_print <- as.data.frame(results_table)
+
+# Round Precision, Recall, F1-score to 2 decimals
+results_print$Accuracy  <- round(results_print$Accuracy, 4)
+results_print$Precision <- round(results_print$Precision, 2)
+results_print$Recall    <- round(results_print$Recall, 2)
+results_print$F1        <- round(results_print$F1, 2)
+
+# Convert Accuracy to percentage notation
+results_print[, "Accuracy"] <- sprintf("%.2f%%", results_print[, "Accuracy"] * 100)
+
+kable(
+  results_print,
+  caption = "Performance comparison of ML models.",
+  align = "lcccc",
+  col.names = c("Model", "Accuracy", "Precision", "Recall", "F1-score")
+) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  row_spec(0, bold = TRUE)
+
+```
+\
+Note: A positive prediction indicates that the model predicts the patient has Alzheimer’s Disease (is Demented), whereas a negative prediction indicates the model predicts the patient does not have Alzheimer’s Disease (is Nondemented). All four evaluation metrics—Accuracy, Precision, Recall, and F1-score—are calculated from the fundamental confusion matrix components (TP, TN, FP, and FN). More detailed definitions of these terms are provided in Tables 2 and 3.
+\newpage 
+
+
+
+```{r prediction-tables, echo=FALSE, message=FALSE, warning=FALSE, fig.weight= 16, fig.height = 5, fig.align='center'}
+
+
+# 1. Data for Correct Predictions Table
+correct_predictions <- data.frame(
+  Term = c("TP", "TN"),
+  FullName = c("True Positive", "True Negative"),
+  ClinicalContext = c(
+    "The model predicts the patient is Demented, and the patient actually is Demented. (A successful diagnosis).",
+    "The model predicts the patient is Nondemented, and the patient actually is Nondemented. (A successful exclusion of the disease)."
+  ),
+  stringsAsFactors = FALSE
+)
+
+# 2. Data for Incorrect Predictions (Errors) Table
+incorrect_predictions <- data.frame(
+  Term = c("FP", "FN"),
+  FullName = c("False Positive", "False Negative"),
+  ClinicalContext = c(
+    "The model predicts the patient is Demented, but the patient actually is Nondemented. (A misdiagnosis).",
+    "The model predicts the patient is Nondemented, but the patient actually is Demented. (A missed diagnosis)."
+  ),
+  stringsAsFactors = FALSE
+)
+
+# 3.  (Correct Predictions)
+kable(
+  correct_predictions,
+  caption = "Correct Outcomes from the Confusion Matrix.",
+  align = "c",
+  col.names = c("Term", "Full Name", "Clinical Context")
+) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(3, width = "25em") %>% 
+  row_spec(0, bold = TRUE, background = "#D9EAD3")
+
+# 4. Create and style the second table (Incorrect Predictions)
+
+kable(
+  incorrect_predictions,
+  caption = "Incorrect Outcomes (Errors) from the Confusion Matrix.",
+  align = "c",
+  col.names = c("Term", "Full Name", "Clinical Context")
+) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(3, width = "25em") %>% 
+  row_spec(0, bold = TRUE, background = "#F9C8C8")
+```
+
+# Performance Table Visualization
+Detailed comparisons of model performance metrics (Accuracy, Precision, Recall, and F1-score) are visually represented in Figure 1.
+\
+
+```{r,echo = FALSE, message=FALSE, warning =FALSE, fig.height= 10, fig.width= 16, fig.cap = "Model comparison across Accuracy, Precision, Recall, and F1-score."}
+results <- data.frame(
+  Model = c("Decision Tree", "Random Forest", "SVM", "XGBoost", "Logistic Reg."),
+  Accuracy = c(89.36, 87.23, 85.11, 89.36, 82.98),
+  Precision = c(0.87, 0.81, 0.80, 0.82, 0.75),
+  Recall = c(0.81, 0.81, 0.75, 0.88, 0.75),
+  F1 = c(0.84, 0.81, 0.77, 0.85, 0.75)
+)
+
+long_data <- results %>%
+  pivot_longer(cols = c(Accuracy, Precision, Recall, F1),
+               names_to = "Metric",
+               values_to = "Value")
+p_acc <- long_data %>% filter(Metric == "Accuracy") %>%
+  ggplot(aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "skyblue", width = 0.6, color = "#3A3A3A") +
+  labs(title = "Accuracy", y = "Accuracy (%)", x = "") +
+  coord_cartesian(ylim = c(80, 90)) +
+  theme_minimal(base_size = 20) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    axis.title  = element_text(size = 14),
+    plot.title  = element_text(size = 16, face = "bold")
+  )
+
+p_prec <- long_data %>% filter(Metric == "Precision") %>%
+  ggplot(aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "lightgreen", width = 0.6, color = "#3A3A3A") +
+  labs(title = "Precision", y = "Precision", x = "") +
+  coord_cartesian(ylim = c(0.7, 0.9)) +
+  theme_minimal(base_size = 20) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    axis.title  = element_text(size = 14),
+    plot.title  = element_text(size = 16, face = "bold")
+  )
+ 
+
+p_rec <- long_data %>% filter(Metric == "Recall") %>%
+  ggplot(aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "orange", width = 0.6, color = "#3A3A3A") +
+  labs(title = "Recall", y = "Recall", x = "") +
+  coord_cartesian(ylim = c(0.7, 0.9)) +
+  theme_minimal(base_size = 20) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    axis.title  = element_text(size = 14),
+    plot.title  = element_text(size = 16, face = "bold")
+  )
+
+
+p_f1 <- long_data %>% filter(Metric == "F1") %>%
+  ggplot(aes(x = Model, y = Value)) +
+  geom_bar(stat = "identity", fill = "plum", width = 0.6, color = "#3A3A3A") +
+  labs(title = "F1-score", y = "F1-score", x = "") +
+  coord_cartesian(ylim = c(0.7, 0.85)) +
+  theme_minimal(base_size = 20) +
+  theme(
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    axis.title  = element_text(size = 14),
+    plot.title  = element_text(size = 18, face = "bold")
+  )
+
+
+(p_acc | p_prec) /
+(p_rec | p_f1)
+```
+
+\newpage
+
+# Confusion Matrix Analysis
+
+```{r cm-plot, include = FALSE}
+plot_confusion_matrix <- function(pred, truth, title = "Confusion Matrix") {
+
+  
+  # desired order for the *labels* themselves
+  desired_levels <- c("Nondemented", "Demented")
+  
+  # factors for prediction/truth in logical order for the x-axis
+  truth_fac <- factor(truth, levels = desired_levels)
+  pred_fac  <- factor(pred,  levels = desired_levels)
+  
+  # confusion table
+  cm <- table(Predicted = pred_fac, True = truth_fac)
+  cm_df <- as.data.frame(cm)
+  
+  # *** for the y-axis, put Nondemented on TOP, Demented on BOTTOM ***
+  # (bottom -> top follows factor levels, so reverse them)
+  cm_df$True <- factor(cm_df$True, levels = rev(desired_levels))
+  
+  neg_level <- desired_levels[1]  # "Nondemented"
+  pos_level <- desired_levels[2]  # "Demented"
+  
+  cm_df <- cm_df %>%
+    mutate(
+      cell_type = case_when(
+        True == "Nondemented" & Predicted == "Nondemented" ~ "TN",
+        True == "Nondemented" & Predicted == "Demented"   ~ "FP",
+        True == "Demented"    & Predicted == "Nondemented" ~ "FN",
+        True == "Demented"    & Predicted == "Demented"    ~ "TP",
+        TRUE ~ ""
+      ),
+      label = paste0(cell_type, " = ", Freq)
+    )
+  
+  ggplot(cm_df, aes(x = Predicted, y = True, fill = Freq)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = label), size = 4, fontface = "bold") +
+    scale_fill_gradient(low = "#FFFFCC", high = "#FF9933") +
+    labs(
+      title = title,
+      x = "Predicted Label",
+      y = "True Label"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+```
+
+```{r tree-conf-matrix,include = FALSE, fig.cap = "Confusion matrix for decision tree."}
+plot_confusion_matrix(tree_pred, y_test,
+                      title = "Confusion Matrix – Decision Tree")
+
+```
+
+
+```{r rf-conf-matrix, include = FALSE, fig.cap = "Confusion matrix for random forest. "}
+plot_confusion_matrix(rf_pred, y_test,
+                      title = "Confusion Matrix – Random Forest")
+```
+
+
+
+```{r boost-conf-matrix, include = FALSE, fig.cap = "Confusion matrix for XGBoost. "}
+plot_confusion_matrix(xgb_pred, y_test,
+                      title = "Confusion Matrix – XGBoost.")
+```
+
+
+```{r SVM-conf-matrix, include = FALSE, fig.cap = "Confusion matrix for Support Vector Machine. "}
+plot_confusion_matrix(svm_pred, y_test,
+                      title = "Confusion Matrix – Support Vector Machine.")
+```
+
+```{r logit-conf-matrix, include = FALSE, fig.cap = "Confusion matrix for Logistic regression ", fig.pos='H'}
+plot_confusion_matrix(logit_pred, y_test,
+                      title = "Confusion Matrix – Logistic Regression")
+```
+
+The individual confusion matrices (Figure 2) provide the underlying count data that justifies the calculated performance metrics (Table 1). The confusion matrix data visually and numerically validates the conclusion that XGBoost is the optimal model. Its ability to minimize False Negatives (FN = 2) is the defining factor, ensuring the highest rate of true dementia case detection necessary for early intervention.
+
+```{r combined-conf-matrices, echo = FALSE, message=FALSE, warning =FALSE, fig.height = 18, fig.width = 20, fig.pos = 't', fig.cap = "Individual Confusion Matrices for All Five Models."}
+
+# library(your_plotting_package) # e.g., library(ggplot2) if your function uses it
+
+# Assuming 'plot_confusion_matrix' generates a ggplot object, assign each plot to a variable.
+
+# 1. Generate the individual plot objects and center their titles
+center_title_plot <- function(p, title_text) {
+  # Re-run your original plot function, then modify the title alignment
+  p <- plot_confusion_matrix(p, y_test, title = title_text)
+  
+  # Check if p is a ggplot object before applying theme changes
+  if (inherits(p, "ggplot")) {
+    p <- p + theme(plot.title = element_text(hjust = 0.5), face = "bold")
+  }
+  return(p)
+}
+
+p1 <- center_title_plot(tree_pred, "Confusion Matrix – Decision Tree")
+p2 <- center_title_plot(rf_pred, "Confusion Matrix – Random Forest")
+p3 <- center_title_plot(xgb_pred, "Confusion Matrix – XGBoost")
+p4 <- center_title_plot(svm_pred, "Confusion Matrix – Support Vector Machine")
+p5 <- center_title_plot(logit_pred, "Confusion Matrix – Logistic Regression")
+
+# 2. Use patchwork to combine them into a 2x3 layout
+# The '+' operator adds plots; the 'plot_layout' sets the structure.
+# 'plot_spacer()' is used to fill the empty 6th spot.
+combined_plots <- (p1 + p2) / (p3 + p4) / (p5 + plot_spacer())
+
+# 3. Print the combined plot
+combined_plots
+
+```
+
