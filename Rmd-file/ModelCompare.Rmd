@@ -31,56 +31,46 @@ library(caret)
 library(xgboost)
 library(data.table)
 ```
-
+The target variable is well-balanced across both cohorts, with the cross-sectional dataset (cross2_imp) showing a 57:43 distribution and the longitudinal dataset (df_2group) achieving a nearly equal 48:52 split, thereby mitigating the risk of majority-class bias and the Accuracy Paradox.
 ```{r, include = FALSE}
-# not used
+
 longitutional <- read.csv("/Users/tera/Desktop/PSTAT/131/project/longitudinal.csv")
 
-ks <- c(3, 5, 7)
-results <- data.frame(k = ks, error = NA)
-df_complete <- longitutional[!is.na(longitutional$SES), ]
-set.seed(123)
+longi_one_row <- longitutional %>%
+    group_by(Subject.ID) %>%
+    slice_max(order_by = Visit, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(Group2 = ifelse(Group %in% c("Converted", "Demented"), 
+                           "Demented", "Nondemented"),
+           Group2 = factor(Group2, levels = c("Nondemented", "Demented")))
+set.seed(1)
+train_idx_long <- sample(nrow(longi_one_row), 0.75 * nrow(longi_one_row))
+train_long_raw <- longi_one_row[train_idx_long, ]
+test_long_raw  <- longi_one_row[-train_idx_long, ]
+ses_median_long  <- median(train_long_raw$SES, na.rm = TRUE)
+mmse_median_long <- median(train_long_raw$MMSE, na.rm = TRUE)
 
-for (i in seq_along(ks)) {
-  k_val <- ks[i]
-  temp <- df_complete
-  # Randomly hide 20% of SES values
-  idx <- sample(which(!is.na(temp$SES)), size = floor(0.2 * nrow(temp)))
-  true_ses <- temp$SES[idx]      # Save true SES
-  temp$SES[idx] <- NA            
-  # Impute with kNN
-  temp_imp <- kNN(temp, variable = "SES", k = k_val)
-  # Extract imputed values
-  imputed_ses <- temp_imp$SES[idx]
-  # Compute error (classification error rate)
-  results$error[i] <- mean(imputed_ses != true_ses)
+prepare_long_data <- function(data, ses_val, mmse_val) {
+  data %>%
+    # Fill missing values with the Training anchor
+    mutate(
+      SES  = ifelse(is.na(SES),  ses_val,  SES),
+      MMSE = ifelse(is.na(MMSE), mmse_val, MMSE)
+    ) %>%
+    mutate(Educ = case_when(
+      EDUC <= 11      ~ 1,
+      EDUC == 12      ~ 2,
+      EDUC %in% 13:15 ~ 3,
+      EDUC == 16      ~ 4,
+      EDUC >= 17      ~ 5
+    )) %>%
+    mutate(Educ = factor(Educ, ordered = TRUE)) %>%
+    # Drop unused clinical/ID columns
+    select(-EDUC, -Subject.ID, -MRI.ID, -Group, -Visit, -MR.Delay, -Hand, -CDR)
 }
-best_k <- results$k[which.min(results$error)]
-# Missing values
-df_imputed <- kNN(longitutional, variable = "SES", k = best_k)
-df_imputed$SES_imp <- NULL
-df_imputed2 <- kNN(df_imputed, variable = "MMSE", k = 5)
-df_imputed2$MMSE_imp <- NULL
-longi_clean <-df_imputed2 %>%
-  mutate(across(where(is.character), as.factor)) %>%
-  mutate(
-    Subject.ID = as.character(Subject.ID),
-    MRI.ID     = as.character(MRI.ID)
-  ) 
-df_2group <- longi_clean %>%
-  mutate(Group2 = ifelse(Group %in% c("Converted", "Demented"),
-                         "Demented", "Nondemented")) %>%
-  mutate(Group2 = factor(Group2, levels = c("Nondemented", "Demented")))%>%
-  # Make sure visits are in order within each subject
-  arrange(Subject.ID, Visit) %>%
-  group_by(Subject.ID) %>%
-  mutate(row_in_subj = row_number()) %>%
-  #  keep row 2 if it exists； otherwise row 1 (for subjects with only 1 visit)
-  filter(row_in_subj == 2 | (row_in_subj == 1 & n() == 1)) %>%
-  ungroup() %>%
-  select(-row_in_subj)
 
-
+train_long <- prepare_long_data(train_long_raw, ses_median_long, mmse_median_long)
+test_long  <- prepare_long_data(test_long_raw, ses_median_long, mmse_median_long)
 ```
 
 ```{r, include = FALSE}
@@ -90,74 +80,123 @@ cross2 <- cross %>%
     Group2 = ifelse(CDR == 0, "Nondemented", "Demented"),
     Group2 = factor(Group2, levels = c("Nondemented", "Demented"))
   ) %>%
-  select(M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF, Group2)
-set.seed(1)
-# Impute the 3 variables using the rest as predictors
-cross2_imp <- kNN(
-  cross2,
-  variable = c("Educ", "SES", "MMSE"),
-  k = 5      # you can change to your tuned k if you want
-)
-
-# VIM adds *_imp indicator columns; drop them
-cross2_imp <- cross2_imp %>%
-  select(-ends_with("_imp"))%>%
+  select(M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF, Group2)%>%
   filter(!is.na(Group2))
+
+set.seed(1)
+
+train_idx <- sample(nrow(cross2), 0.75 * nrow(cross2))
+train_raw <- cross2[train_idx, ]
+test_raw  <- cross2[-train_idx, ]
+
+ses_median_anchor <- median(train_raw$SES, na.rm = TRUE)
+
+train_dat <- train_raw %>%
+  mutate(SES = ifelse(is.na(SES), ses_median_anchor, SES))
+
+test_dat <- test_raw %>%
+  mutate(SES = ifelse(is.na(SES), ses_median_anchor, SES))
+
+
 ```
 
 
-
 ```{r splitting, include = FALSE}
-set.seed(213)
-K <-10
 
-# One 80/20 split
-train1 = sample(nrow(df_2group), 0.8*nrow(df_2group))
-train2 = sample(nrow(cross2_imp), 0.8*nrow(cross2_imp)) 
-long2.train = df_2group[train1, ] # notused
-long2.test = df_2group[-train1,]  # notused
+y_longtrain = train_long$Group2
+y_longtest = test_long$Group2
 
-train_dat = cross2_imp[train2, ]
-test_dat = cross2_imp[-train2,]
-
+train_dat$Group2 <- relevel(train_dat$Group2, ref = "Demented")
+test_dat$Group2  <- relevel(test_dat$Group2,  ref = "Demented")
 y_train <- train_dat$Group2
 y_test <- test_dat$Group2
 
+set.seed(1)
+folds_cross <- createFolds(train_dat$Group2, k = 10)
+folds_long <- createFolds(train_long$Group2, k = 10)
+
 # Set num of folds
-train_control <- trainControl(
+train_control_cross <- trainControl(
   method = "cv",
   number = 10,
   verboseIter = TRUE,
-  classProbs = TRUE
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary, # Adds AUC/Sensitivity/Specificity
+  savePredictions = "final",
+  index = folds_cross
+)
+
+train_control_long <- trainControl(
+  method = "cv",
+  number = 10,
+  repeats = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final",
+  index = folds_long
 )
 ```
 
 ```{r, include=FALSE}
-set.seed(1)
 
+set.seed(1)
 logit_model <- train(
   Group2 ~ .,
   data      = train_dat,
-  method    = "glm",
+  method    = "glmnet",
   family    = "binomial",
-  trControl = train_control
+  trControl = train_control_cross,
+  metric  = "ROC" 
 )
 
+
+logit_model1 <- train(
+  Group2 ~ .- eTIV - nWBV - ASF,
+  data      = train_dat,
+  method    = "glmnet",
+  family    = "binomial",
+  trControl = train_control_cross,
+  metric  = "ROC"
+)
+
+
+logit_model2 <- train(
+  Group2 ~ .,
+  data      = train_long,
+  method    = "glmnet",
+  family    = "binomial",
+  trControl = train_control_long,
+  metric  = "ROC")
+
+logit_model3 <- train(
+  Group2 ~ .- eTIV - nWBV - ASF,
+  data      = train_long,
+  method    = "glmnet",
+  family    = "binomial",
+  trControl = train_control_long,
+  metric  = "ROC"
+)
+
+```
+
+```{r, include=FALSE}
 logit_pred <- predict(logit_model, test_dat)
 logit_conf <- confusionMatrix(logit_pred, test_dat$Group2)
 logit_cv_acc <- max(logit_model$results$Accuracy)
-
+logit_pred1 <- predict(logit_model1, test_dat)
+logit_pred2 <- predict(logit_model2, test_long)
+logit_pred3 <- predict(logit_model3, test_long)
 ```
 
 
 ```{r include = FALSE }
 # with two group notused
-tree.long2 = tree(Group2~. - Subject.ID - MRI.ID - Hand - Group-CDR, data = df_2group)
+
 
 #draw.tree(tree.long2, nodeinfo=TRUE, cex = 0.4)
 # title("Classification Tree Predicting Dementia Status (2 groups)", cex = 0.8)
 
-tree.longtrain2 <- tree(Group2~. - Subject.ID - MRI.ID - Hand - Group - CDR, data = long2.train)
+tree.longtrain2 <- tree(Group2~., data = train_long)
   
 # Cross-Validation for tree
 cv_tree2 <- cv.tree(tree.longtrain2, FUN = prune.misclass, K = 5)
@@ -183,15 +222,43 @@ title("Pruned tree of size 2")
 ```
 
 ```{r DTmodel,include = FALSE}
-tree_grid <- expand.grid(cp = seq(0.0001, 0.05, length.out = 30))
+tree_grid <- expand.grid(cp = seq(0, 0.02, length.out = 50))
 
 set.seed(1)
 tree_model <- train(
   Group2 ~ .,
   data = train_dat,
   method = "rpart",
-  trControl = train_control,
-  tuneGrid  = tree_grid,)
+  trControl = train_control_cross,
+  tuneGrid  = tree_grid, 
+  metric = "ROC")
+
+tree_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data = train_dat,
+  method = "rpart",
+  trControl = train_control_cross,
+  tuneGrid  = tree_grid,
+  metric = "ROC"
+  )
+
+tree_model2 <- train(
+  Group2 ~ . ,
+  data = train_long,
+  method = "rpart",
+  trControl = train_control_long,
+  tuneGrid  = tree_grid,
+  metric = "ROC"
+  )
+
+tree_model3 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data = train_long,
+  method = "rpart",
+  trControl = train_control_long,
+  tuneGrid  = tree_grid, 
+  metric = "ROC")
+
 ```
 
 ```{r tree-conf, include = F}
@@ -201,7 +268,12 @@ tree_acc <- tree_conf$overall["Accuracy"]
 best_cp <- tree_model$bestTune$cp
 tree_cv_acc <- tree_model$results$Accuracy[
   tree_model$results$cp == best_cp]
+
+tree_pred1 <- predict(tree_model1, newdata = test_dat)
+tree_pred2 <- predict(tree_model2, newdata = test_long)
+tree_pred3 <- predict(tree_model3, newdata = test_long)
 ```
+
 
 
 ```{r rf-fold,include= FALSE}
@@ -211,9 +283,37 @@ rf_model <- train(
   Group2 ~ . ,
   data      = train_dat,
   method    = "rf",
-  trControl = train_control,
+  trControl = train_control_cross,
   tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
-  importance = TRUE)
+  importance = TRUE,
+  metric = "ROC")
+
+rf_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_dat,
+  method    = "rf",
+  trControl = train_control_cross,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE,
+  metric = "ROC")
+
+rf_model2 <- train(
+  Group2 ~ .,
+  data      = train_long,
+  method    = "rf",
+  trControl = train_control_long,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE,
+  metric = "ROC")
+
+rf_model3 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_long,
+  method    = "rf",
+  trControl = train_control_long,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE,
+  metric = "ROC")
 ```
 
 ```{r rf-conf, include = F}
@@ -222,8 +322,11 @@ rf_cv_acc <- rf_model$results$Accuracy[ rf_model$results$mtry == rf_model$bestTu
 
 rf_conf <- confusionMatrix(rf_pred, test_dat$Group2)
 rf_acc <- rf_conf$overall["Accuracy"]
-```
 
+rf_pred1 <- predict(rf_model1, newdata = test_dat)
+rf_pred2 <- predict(rf_model2, newdata = test_long)
+rf_pred3 <- predict(rf_model3, newdata = test_long)
+```
 
 
 ```{r RandomForest,  include = F}
@@ -231,8 +334,8 @@ rf_acc <- rf_conf$overall["Accuracy"]
 set.seed(1)
 
 rf_model0 <- randomForest(
-  Group2 ~ . - Subject.ID - MRI.ID - Hand - Group - CDR,
-  data      = long2.train,
+  Group2 ~ .,
+  data      = train_long,
   ntree     = 500,    # number of trees
   mtry      = 3,      # number of variables tried at each split (you can tune this)
   importance = TRUE   # to look at variable importance later
@@ -243,14 +346,15 @@ rf_model0 <- randomForest(
 
 
 ```{r XGboosting, include = FALSE}
+
 grid_tune <- expand.grid(
-  nrounds = c(500, 1000, 1500), # number of trees
-  max_depth = c(2,4,6),
-  eta = 0.1, #learning rate
-  gamma = 0, # pruning draft
-  colsample_bytree = 1, #subsample ratio of col for tree
-  min_child_weight = 1, # the larger the more conservative the model; can be used as a stop
-  subsample = 1 # used to prevent overfitting by sampling x% train
+  nrounds = c(50, 100, 150), # number of trees
+  max_depth = c(2,3,4),
+  eta = c(0.01, 0.1, 0.3), #learning rate
+  gamma = c(0,1), # pruning draft
+  colsample_bytree = c(0.6, 0.8), # % of features used per tree
+  min_child_weight = c(1), # the larger the more conservative the model; can be used as a stop
+  subsample = 0.75 # used to prevent overfitting by sampling x% train
 )
 
 # Drop factor predictors that have only 1 level
@@ -260,14 +364,44 @@ grid_tune <- expand.grid(
 
 ```{r xgb-fold,include = FALSE}
 set.seed(1)
-
 xgb_model <- train(
-  Group2 ~ .,
+  Group2 ~ . ,
   data      = train_dat,
   method    = "xgbTree",
-  trControl = train_control,
+  trControl = train_control_cross,
   tuneGrid  = grid_tune,
-  verbose   = TRUE
+  verbose   = TRUE, 
+  metric = "Accuracy"
+)
+
+xgb_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_dat,
+  method    = "xgbTree",
+  trControl = train_control_cross,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE,
+  metric = "Accuracy"
+)
+
+xgb_model2 <- train(
+  Group2 ~ . ,
+  data      = train_long,
+  method    = "xgbTree",
+  trControl = train_control_long,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE,
+  metric = "Accuracy"
+)
+
+xgb_model3 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_long,
+  method    = "xgbTree",
+  trControl = train_control_long,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE,
+  metric = "Accuracy"
 )
 ```
 
@@ -281,24 +415,78 @@ xgb_cv_acc <- xgb_model$results$Accuracy[
   apply(xgb_model$results[, names(best_pars)], 1, function(row)
     all(row == best_pars))
 ]
+xgb_pred1 <- predict(xgb_model1, newdata = test_dat)
+xgb_pred2 <- predict(xgb_model2, newdata = test_long)
+xgb_pred3 <- predict(xgb_model3, newdata = test_long)
+
+
 ```
+
+
+
+
 
 ```{r SVM, include = FALSE}
 set.seed(1)
 
 svm_grid <- expand.grid(
-  C     = c(0.1, 0.5, 1, 2, 5, 10),
-  sigma = c(0.001, 0.005, 0.01, 0.02, 0.05)
+  C     = c(0.25,0.5,1),
+  sigma = c(0.005, 0.01, 0.02)
 )
 
+svm_control <- trainControl(
+  method = "repeatedcv",
+  number = 15,
+  repeats = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+
+
 svm_model <- train(
-  Group2 ~ .,
+  Group2 ~ . ,
   data       = train_dat,
   method     = "svmRadial",
-  trControl  = train_control,
+  trControl  = train_control_cross,
   preProcess = c("center", "scale"), 
   tuneGrid   = svm_grid,
-  metric     = "Accuracy"
+  metric     = "ROC"
+  
+)
+
+
+svm_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data       = train_dat,
+  method     = "svmRadial",
+  trControl  = train_control_cross,
+  preProcess = c("center", "scale"), 
+  tuneGrid   = svm_grid,
+  metric     = "ROC"
+)
+
+
+svm_model2 <- train(
+  Group2 ~ . ,
+  data       = train_long,
+  method     = "svmRadial",
+  trControl  = train_control_long,
+  preProcess = c("center", "scale", "pca"), 
+  tuneGrid   = svm_grid,
+  metric     = "ROC"
+)
+
+
+svm_model3 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data       = train_long,
+  method     = "svmRadial",
+  trControl  = train_control_long,
+  preProcess = c("center", "scale"), 
+  tuneGrid   = svm_grid,
+  metric     = "ROC"
 )
 ```
 
@@ -313,7 +501,14 @@ svm_cv_acc <- svm_model$results$Accuracy[
   svm_model$results$C == best_C &
   svm_model$results$sigma == best_sigma
 ]
+
+svm_pred1 <- predict(svm_model1, newdata = test_dat)
+svm_pred2 <- predict(svm_model2, newdata = test_long)
+svm_pred3 <- predict(svm_model3, newdata = test_long)
 ```
+
+
+
 # Evaluation Metrics
 
 The Table 1 shows the performance of five different classifier models: Decision Tree, Random Forest, Support Vector Machine (SVM), XGBoost, and Logistic Regression. The comparison is based on the following metrics:
@@ -375,16 +570,92 @@ results_print$F1        <- round(results_print$F1, 2)
 # Convert Accuracy to percentage notation
 results_print[, "Accuracy"] <- sprintf("%.2f%%", results_print[, "Accuracy"] * 100)
 
-kable(
-  results_print,
-  caption = "Performance comparison of ML models.",
-  align = "lcccc",
-  col.names = c("Model", "Accuracy", "Precision", "Recall", "F1-score")
-) %>%
-  kable_styling(full_width = FALSE, position = "center") %>%
-  row_spec(0, bold = TRUE)
 
 ```
+```{r, include=FALSE}
+# Function to calculate, format, and display model results
+generate_performance_report <- function(pred_list, truth, title = "Performance comparison of ML models.") {
+  
+  # 1. Apply your compute_metrics function to every prediction in the list
+  # This handles tree_pred, tree_pred1, etc., automatically
+  metrics_list <- lapply(pred_list, function(p) {
+    # Ensure prediction and truth have same length
+    if(length(p) != length(truth)) return(rep(NA, 4)) 
+    compute_metrics(p, truth)
+  })
+  
+  # 2. Combine into a matrix and then a dataframe
+  results_df <- as.data.frame(do.call(rbind, metrics_list))
+  
+  # 3. Formatting (Rounding and Percentages)
+  # Keeping 4 decimals for Accuracy before percentage conversion
+  if(ncol(results_df) == 4) {
+    colnames(results_df) <- c("Accuracy", "Precision", "Recall", "F1")
+  }
+  
+  # 4. Final formatting for the Writing Sample
+  results_df %>%
+    mutate(
+      Accuracy = sprintf("%.2f%%", round(Accuracy, 4) * 100),
+      across(c(Precision, Recall, F1), ~round(.x, 2))
+    ) %>%
+    kable(caption = title, align = "c") %>%
+    kable_styling(full_width = FALSE, position = "center") %>%
+    row_spec(0, bold = TRUE)
+}
+
+
+
+
+```
+
+Linear classifiers (logistic regression and SVM) demonstrated higher accuracy in NoMRI models, likely due to reduced multicollinearity and improved linear separability among clinical predictors. In contrast, tree-based methods benefited more from MRI-derived variables, which introduce non-linear and interaction effects that are better captured by hierarchical splits.
+
+```{r, echo=FALSE}
+
+full_model_preds <- list(
+  "Decision Tree" = tree_pred,
+  "Random Forest" = rf_pred,
+  "SVM"           = svm_pred,
+  "XGBoost"       = xgb_pred,
+  "Logistic Reg." = logit_pred
+)
+
+generate_performance_report(full_model_preds, test_dat$Group2, "Performance comparison of Full ML Models - CrossSection") 
+
+#Table without MRI variables
+half_model_preds <- list(
+  "Decision Tree" = tree_pred1,
+  "Random Forest" = rf_pred1,
+  "SVM"           = svm_pred1,
+  "XGBoost"       = xgb_pred1,
+  "Logistic Reg." = logit_pred1
+)
+
+generate_performance_report(half_model_preds, test_dat$Group2, "Performance comparison of NoMRI ML Models - CrossSection") 
+
+longf_model_preds <- list(
+  "Decision Tree" = tree_pred2,
+  "Random Forest" = rf_pred2,
+  "SVM"           = svm_pred2,
+  "XGBoost"       = xgb_pred2,
+  "Logistic Reg." = logit_pred2
+)
+
+generate_performance_report(longf_model_preds, test_long$Group2, "Performance comparison of Full ML Models - Longitutional") 
+
+#Table without MRI variables
+longh_model_preds <- list(
+  "Decision Tree" = tree_pred3,
+  "Random Forest" = rf_pred3,
+  "SVM"           = svm_pred3,
+  "XGBoost"       = xgb_pred3,
+  "Logistic Reg." = logit_pred3
+)
+
+generate_performance_report(longh_model_preds, test_long$Group2, "Performance comparison of NoMRI ML Models - Longitutional") 
+```
+
 \
 Note: A positive prediction indicates that the model predicts the patient has Alzheimer’s Disease (is Demented), whereas a negative prediction indicates the model predicts the patient does not have Alzheimer’s Disease (is Nondemented). All four evaluation metrics—Accuracy, Precision, Recall, and F1-score—are calculated from the fundamental confusion matrix components (TP, TN, FP, and FN). More detailed definitions of these terms are provided in Tables 2 and 3.
 \newpage 
@@ -600,6 +871,7 @@ plot_confusion_matrix(logit_pred, y_test,
 
 The individual confusion matrices (Figure 2) provide the underlying count data that justifies the calculated performance metrics (Table 1). The confusion matrix data visually and numerically validates the conclusion that XGBoost is the optimal model. Its ability to minimize False Negatives (FN = 2) is the defining factor, ensuring the highest rate of true dementia case detection necessary for early intervention.
 
+
 ```{r combined-conf-matrices, echo = FALSE, message=FALSE, warning =FALSE, fig.height = 18, fig.width = 20, fig.pos = 't', fig.cap = "Individual Confusion Matrices for All Five Models."}
 
 # library(your_plotting_package) # e.g., library(ggplot2) if your function uses it
@@ -629,8 +901,83 @@ p5 <- center_title_plot(logit_pred, "Confusion Matrix – Logistic Regression")
 # 'plot_spacer()' is used to fill the empty 6th spot.
 combined_plots <- (p1 + p2) / (p3 + p4) / (p5 + plot_spacer())
 
-# 3. Print the combined plot
+# print the combined plot
 combined_plots
+```
+
+```{r, echo=FALSE}
+compare_classifiers <- function(...) {
+  # 1. Capture the models
+  model_list <- list(...)
+  
+  # 2. Collect resampling results
+  resamps <- caret::resamples(model_list)
+  
+  # 3. Print Statistical Comparison
+  cat("--- Descriptive Statistics ---\n")
+  print(summary(resamps))
+  
+  # 4. Statistical Significance Test
+  cat("\n--- Hypothesis Testing (Model Differences) ---\n")
+  diffs <- diff(resamps)
+  print(summary(diffs))
+  
+  # 5. Visual Comparison
+  # FIX: We must use the metrics that actually exist: ROC and Sens
+  p <- bwplot(resamps, 
+              metric = c("ROC", "Sens"), 
+              main = "Model Comparison: MRI vs. No-MRI",
+              scales = list(x = list(relation = "free")))
+  
+  print(p)
+  
+  return(resamps)
+}
+
+
+comparison_results_cross <- compare_classifiers(
+  DT_Full = tree_model, 
+  DT_NoMRI = tree_model1,
+  RF_Full = rf_model,
+  RF_NoMRI = rf_model1,
+  XG_Full = xgb_model,
+  XG_NoMRI = xgb_model1,
+  SVM_Full = svm_model,
+  SVM_NoMRI = svm_model1,
+  Logit_Full = logit_model,
+  Logit_NoMRI= logit_model1
+  
+)
+summary(comparison_results_cross)
+diffs_cross <- diff(comparison_results_cross)
+
+median_roc_values <- summary(comparison_results_cross)$statistics$ROC[, "Median"]
+
+print(median_roc_values)
+
 
 ```
+
+```{r}
+comparison_results <- compare_classifiers(
+  DT_Full = tree_model2, 
+  DT_NoMRI = tree_model3,
+  RF_Full = rf_model2,
+  RF_NoMRI = rf_model3,
+  XG_Full = xgb_model2,
+  XG_NoMRI = xgb_model3,
+  SVM_Full = svm_model2,
+  SVM_NoMRI = svm_model3,
+  Logit_Full = logit_model2,
+  Logit_NoMRI= logit_model3
+  
+)
+
+summary(comparison_results)
+diffs <- diff(comparison_results)
+# Extract a summary table of all ROC (AUC) values
+auc_summary <- summary(comparison_results)$statistics$ROC
+# Print it to see Min, Max, Mean, and Median
+```
+
 
