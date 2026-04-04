@@ -1,0 +1,1124 @@
+---
+title: "Early Alzheimer’s Detection with Machine Learning"
+author: "Linglu Li"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    number_sections: false
+    fig_width: 6
+    fig_height: 3
+  html_document:
+    toc: true
+    df_print: paged
+  word_document:
+    toc: true
+header-includes:
+- \usepackage{float}
+- \usepackage{hyperref}
+---
+
+```{r, include=FALSE}
+# Necessary package
+library(tidyr)
+library(readxl)
+library(MASS)
+library(dplyr) 
+library(purrr)
+library(ggplot2)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(patchwork)
+library(VIM)
+library(cowplot) 
+library(mice) # for univariate imputation
+library(tidyverse)
+
+library(tree)
+library(reshape2)
+library(randomForest)
+library(gbm)
+library(ISLR)
+library(caret)
+library(data.table)
+library(pROC)
+```
+\newpage
+
+# Abstract
+
+Early detection of Alzheimer’s Disease (AD) is crucial for timely intervention, as it may help delay disease progression and preserve quality of life. However, traditional diagnostic procedures rely heavily on high-cost neuroimaging biomarkers such as those from Magnetic Resonance Imaging (MRI), limiting scalability in routine care. While AI-based techniques can flag individuals at risk for AD through Electronic Health Records (EHR), researchers encounter an information gap due to limited access to neuroimaging data. This analysis aims to investigate whether cognitive tests and demographic proxies can achieve diagnostic fidelity comparable to the MRI-based model in detecting high-risk patients before clinical manifestations appear.
+
+\
+This study used data from the Open Access Series of Imaging Studies (OASIS) to examine the longitudinal diagnostic performance of multiple machine learning algorithms for dementia detection under two predictive settings: a full approach that included demographic, cognitive, and MRI-derived variables, and a cost-effective approach that excluded all neuroimaging measures. Model performance was evaluated using accuracy, precision, recall, F1-score, and receiver operating characteristic curve (ROC) analysis. Comparative analyses focused on the impact of removing MRI biomarkers and demographic differences between demented and non-demented groups. 
+
+\
+A Mann-Whitney U test revealed that higher educational attainment was significantly associated with nondemented status in longitudinal (p = .003) cohorts. Feature importance rankings consistently identified the Mini-Mental State Examination (MMSE) score as the dominant diagnostic predictor in the RF and XGBoost models (Importance = 100). Among all classifiers, the Support Vector Machine (SVM) algorithm demonstrated the highest clinical safety performance. This predictive approach achieved accuracy of 83.33% for both Full and NoMRI models. The mean ROC was approximately 0.804 across four SVM configurations.
+
+\
+This work demonstrated that machine learning algorithms using MRI-excluded metrics maintain strong predictive performance and that the MMSE is a consistent predictor of dementia status. These findings highlight the feasibility of proxy-based methods for early identification using cognitive and demographic measurements alone. Clinically, such models may provide interpretable risk signals to support clinicians’ decisions regarding follow-up screening, monitoring, and care planning when neuroimaging data are unavailable, thereby enhancing diagnostic accessibility at scale. Future research will confirm these results in larger datasets and explore additional cost-effective indicators to improve early Alzheimer’s disease detection.
+
+\newpage
+
+# Data
+
+The OASIS published two datasets: a Cross-sectional MRI database and a Longitudinal MRI database, each consisting of distinct groups of subjects. The original dataset is available \href{https://www.kaggle.com/datasets/jboysen/mri-and-alzheimers}{\textcolor{blue}{here}}. Both datasets include demographic, cognitive, and neuroimaging measures that have been widely studied as biomarkers of Alzheimer’s disease.
+```{r, echo=FALSE}
+cross <- read.csv("../Data/oasis_cross-sectional.csv")
+longitudinal <- read.csv("../Data/longitudinal.csv")
+
+
+# cross_section dataset with all missing value
+cross_all <- cross %>%
+  mutate(
+    Group2 = ifelse(CDR == 0, "Nondemented", "Demented"),
+    Group2 = factor(Group2, levels = c("Nondemented", "Demented"))
+  ) %>%
+  # Remove ID + other columns don’t want as predictors
+  mutate(Educ = factor(Educ, level = 1:5, ordered = TRUE)) %>%
+  select(M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF, Group2, CDR)
+
+# filter longitudinal dataset retain only last visits
+  
+longitudinal_last <- longitudinal %>%
+  group_by(Subject.ID) %>%
+  slice_max(order_by = Visit, n = 1, with_ties = FALSE) %>%  # last visit
+  ungroup() %>%
+  mutate(Educ = case_when(
+    EDUC <= 11        ~ 1,
+    EDUC == 12        ~ 2,
+    EDUC %in% 13:15   ~ 3,
+    EDUC == 16        ~ 4,
+    EDUC >= 17        ~ 5
+  )) %>%
+  mutate( Group2 = ifelse(Group %in% c("Converted", "Demented"), "Demented", Group),
+         Educ = factor(Educ, ordered = TRUE),
+         Group2 = ifelse(Group2 == "Demented", 1, 0),
+         M.F = ifelse(M.F == "M" | M.F == "Male", 1, 0)) %>% 
+  select(-EDUC, -Subject.ID, -MRI.ID, -Visit, - MR.Delay, -Hand,  -Group, -CDR) 
+longitudinal_last$SES_f <- factor(longitudinal_last$SES, ordered = TRUE)
+longitudinal_last$Educ_f <- factor(longitudinal_last$Educ, ordered = TRUE)
+longitudinal_last <- longitudinal_last %>%
+  mutate(Group2 = factor(ifelse(Group2 == 1, "Demented", "Nondemented")))
+```
+
+## Dataset Description
+
+This study utilized a longitudinal MRI dataset of 150 right-handed subjects aged 60–96 years. The dataset was processed to retain only each subject's most recent visit, resulting in three groups: 72 $Nondemented$ (stable), 64 $Demented$ (stable), and 14 $Converted$ (progressed from nondemented to demented). For this analysis, converted subjects were labeled as $Demented$. The target variable demonstrated balanced class distribution (48:52) between non-demented and demented cases, mitigating majority-class bias and the Accuracy Paradox.
+
+## Attribute Definitions
+\
+```{r, echo=FALSE}
+table1 <- tribble(
+  ~`No.`, ~Attributes, ~Description,
+  1, "ID",    "Identification",
+  2, "M/F",   "Gender (M if Male, F if Female)",
+  3, "Hand",  "Handedness",
+  4, "Age",   "Age in years",
+  5, "EDUC",  "Years of education",
+  6, "SES",   "Socio Economic Status (Score from 1-5)",
+  7, "MMSE",  "Mini Mental State Examination (Score from 0-30)",
+  8, "CDR",   "Clinical Dementia Rating (Scale from 0-1)",
+  9, "eTIV",  "Estimated Total Intracranial Volume",
+  10, "nWBV", "Normalize Whole Brain Volume",
+  11, "ASF",  "Atlas Scaling Factor",
+  12, "Group2","Dementia status (Nondemented vs. Demented)"
+)
+
+kable(table1, caption = "Column Description")
+```
+
+
+\newpage
+
+# Exploratory Data Analysis
+
+\textbf{Exploratory Data Analysis Summary:}
+
+\begin{itemize}
+    \item Females are more represented in the dataset, with similar proportions across dementia status.
+    \item Nondemented patients show higher whole-brain volume ($nWBV$), stronger $MMSE$ performance, and greater education levels ($Educ$) relative to demented patients.
+    \item Educational levels differed significantly between the diagnostic groups, as Nondemented individuals typically possessed higher cognitive reserve through education than those in the Demented group.
+\end{itemize}
+
+## Descriptive Statistics
+
+Table 2 provides descriptive statistics for the primary clinical and imaging variables, including their minimum, maximum, mean, and median values. Figure 1 provides boxplots of the primary continuous attributes, displaying their quartile ranges (Q1–Q3), median, mean, and potential outliers. This graphical view helps reveal distributional characteristics such as skewness and variability that are not fully captured by summary statistics alone.
+
+\
+
+```{r echo=FALSE, out.width="100%", fig.pos='!htbp'}
+
+vars <- c("Educ", "SES", "MMSE", "eTIV", "nWBV", "ASF")
+table3_long <- longitudinal_last %>%
+  transmute(across(all_of(vars), ~ as.numeric(as.character(.)))) %>%
+  tidyr::pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  )
+
+table3 <- table3_long %>%
+  group_by(Variable) %>%
+  summarise(
+    Min = min(Value, na.rm = TRUE),
+    Max = max(Value, na.rm = TRUE),
+    Mean = mean(Value, na.rm = TRUE),
+    Median = median(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+kable(table3,
+      digits = 2,
+      caption = "Summary statistics (Min, Max, Mean, and Median)") %>%
+  kable_styling(latex_options = "H")  
+
+```
+```{r boxplot, echo=FALSE, fig.cap = "Boxplot distribution of continuous attributes.", fig.pos='H', fig.align='center', warning =FALSE}
+vars2 <- c("Educ", "SES", "MMSE", "nWBV", "ASF")
+df_long <- longitudinal_last %>%
+  mutate(across(all_of(vars2), ~ as.numeric(as.character(.)))) %>%
+  select(all_of(vars2)) %>%
+  pivot_longer(cols = everything(),
+               names_to = "Variable",
+               values_to = "Value")
+
+p1 <- ggplot(df_long, aes(x = Variable, y = Value)) +
+  geom_boxplot(outlier.alpha = 0.3, fill = "#C7D3EC") +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red") +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Distribution of Attributes (Q1-Q3, Median, Mean)",
+    x = "Attribute", y = "Value"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# 2. Separate plot for eTIV
+df_eTIV <- longitudinal_last %>%
+  select(eTIV) %>%
+  pivot_longer(eTIV, names_to = "Variable", values_to = "Value")
+
+p2 <- ggplot(df_eTIV, aes(x = Variable, y = Value)) +
+  geom_boxplot(outlier.alpha = 0.3, fill = "#C7D3EC") +
+  stat_summary(fun = mean, geom = "point", shape = 20, size = 3, color = "red") +
+  theme_minimal(base_size = 14) +
+  labs(
+    x = "eTIV", y = "Value"
+  )
+
+(p1 | p2) + plot_layout(widths = c(5, 1))
+```
+
+
+
+
+## Biological Factors
+
+Figure 1 shows that female participants make up a larger portion of the nondemented groups; however, the relative proportions of males and females remain fairly consistent across groups, suggesting no strong gender differences in dementia status within this dataset.
+\
+
+```{r fig-gender-bar, echo = FALSE, fig.cap = "Analysis of demented and non-demented rate based on gender.", fig.width=13, fig.height=8, fig.pos="H", warning=FALSE}
+
+ggplot(longitudinal_last, aes(x = as.factor(Group2), fill = as.factor(M.F))) +
+  geom_bar(position = "stack") +
+  scale_fill_manual(values = c("steelblue", "darkorange"), 
+                    labels = c("0" = "Female", "1" = "Male")) +
+  scale_x_discrete(labels = c("0" = "Nondemented", "1" = "Demented")) + # This forces the labels
+  labs(
+    title = "Gender and Dementia Rate",
+    x = "Diagnosis Group",
+    y = "Number of Patients",
+    fill = "Gender"
+  ) +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    panel.background = element_rect(fill = "white", color = "black"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black"), # Clear horizontal text
+    plot.title = element_text(hjust = 0.5, size = 16),
+    axis.title = element_text(size = 14)
+  )
+```
+
+\newpage
+
+Figure 2.C shows a clear leftward shift in Normalized Whole Brain Volume (nWBV) among demented patients. The mean nWBV for demented patients was 0.712, compared with 0.734 in the nondemented group, indicating greater loss of brain tissue among demented individuals.
+\
+
+```{r fig-other, echo=FALSE, fig.cap="(A-C) Analysis of ASF, eTIV, and nWBV for Demented and Non-demented groups of patients.",fig.width = 25, fig.height=23, fig.pos="H", warning=FALSE}
+
+plot_density_panel <- function(data, vars, group_var = "Group2",
+                               colors = NULL,
+                               alpha = 0.35) {
+  
+  # Make sure group variable is a factor
+  data[[group_var]] <- as.factor(data[[group_var]])
+  levs <- levels(data[[group_var]])
+  
+  # If no colors provided, pick some defaults
+  if (is.null(colors)) {
+    # give each level a distinct color
+    colors <- setNames(RColorBrewer::brewer.pal(length(levs), "Set1")[seq_along(levs)],
+                       levs)
+  } else {
+    # ensure names(colors) match levels of group_var
+    if (is.null(names(colors))) {
+      stop("Please name the colors with the levels of the grouping variable.")
+    }
+  }
+  
+  plots <- vector("list", length(vars))
+  
+  for (i in seq_along(vars)) {
+    var <- vars[i]
+    
+    p <- ggplot(data, aes(x = .data[[var]],
+                          color = .data[[group_var]],
+                          fill  = .data[[group_var]])) +
+      geom_density(alpha = alpha, linewidth = 0.8) +
+      scale_fill_manual(values = colors) +
+      scale_color_manual(values = colors) +
+      labs(
+        x = var,
+        y = "Density",
+        color = "Group",
+        fill  = "Group"
+      ) +
+      ggtitle(LETTERS[i]) +   # A, B, C labels
+      theme_classic(base_size = 16) +
+      theme(
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        panel.border = element_rect(colour = "black", fill = NA),
+        axis.text.x = element_text(angle = 0, vjust = 0.5),
+        plot.title = element_text(size = 14, face = "bold", hjust = 0),
+        legend.position = "right"
+      )
+    
+    plots[[i]] <- p
+  }
+  
+  # stack panels vertically: A on top, then B, then C
+  wrap_plots(plots, ncol = 1)
+}
+
+fig3 <- plot_density_panel(longitudinal_last,
+                           vars = c("ASF", "eTIV", "nWBV"),
+                           group_var = "Group2",
+                           colors = c("Nondemented" = "#4A90E2", 
+                                      "Demented" = "#F5A26C"))
+fig3
+```
+
+\newpage
+Figure 3A shows that the EDUC distributions differ between groups. The demented group’s density is concentrated at lower education levels, with a peak at lower EDUC categories, whereas the nondemented group peaks at higher EDUC categories. This indicates a leftward shift and overall lower educational attainment among individuals with dementia.
+
+This pattern is consistent with prior work showing that education is an important protective factor for late-life cognition. For example, the Lancet Commission on dementia (2020) identified low education as one of the major modifiable risk factors for dementia and estimated that increasing early-life education could prevent around 7% of dementia cases worldwide. Similarly, A recent cross-sectional study from China (Zhong et al., 2024) also reported that higher education was linked to a significantly lower risk of cognitive impairment, even after controlling for age, sex, occupation type, cognitive activity, and brain reserve.
+
+Figure 3B shows the age distribution for demented and nondemented participants. A noticeably larger proportion of individuals with dementia fall within the 70–80 age range for both group, indicating that age 70–85 is the period of highest prevalence in this specific dataset.
+
+Research by Ritchie and Kildea (1995) suggests that dementia behaves like an age-related condition: prevalence increases sharply through late life but then levels off at about 40% after age 95, rather than continuing to rise indefinitely (Ritchie & Kildea, 1995). Although Kavitha suggests that the low number of very old demented individuals reflects reduced survival among those with dementia, another explanation is that people who reach very old ages without cognitive decline may have inherently lower dementia risk, which helps explain the small number of dementia cases in the 90+ population.
+
+```{r fig-age, echo=FALSE, fig.cap="Analysis on level of Education and Age.", fig.width = 25, fig.height=18, fig.pos="H", warning=FALSE}
+fig4 <- plot_density_panel(longitudinal_last %>% 
+    mutate(
+      Educ = as.numeric(as.character(Educ)), # Force Educ to be a number
+      Age = as.numeric(Age)
+    ),
+  vars = c("Educ", "Age"),
+  group_var = "Group2",
+  colors = c("Nondemented"="#4A90E2", "Demented"="#F5A26C")
+)
+fig4
+```
+
+\newpage
+
+## Clinical Factors
+
+Figure 4 shows that the non-demented group had much higher MMSE (Mini-Mental State Examination) scores than those with dementia.
+\
+
+```{r fig-group-den, echo=FALSE, fig.cap="Analysis of MMSE scores for demented, converted, and non-demented groups of patients.", fig.width=13, fig.height=5, fig.pos="H", warning=FALSE}
+ggplot(longitudinal_last, aes(x = MMSE, fill = as.factor(Group2))) +
+  geom_density(alpha = 0.5) +
+  scale_fill_manual(
+    values = c(
+      "Nondemented" = "#4C9BE8",  # blue
+      "Demented"    = "#F4A261"  # orange
+    )
+  ) +
+  labs(
+    x = "MMSE",
+    y = "Density",
+    fill = "Group"
+  ) +
+  theme_classic(base_size = 16) +   # << all white, no grid
+  theme(
+    plot.background  = element_rect(fill = "white", color = NA),
+    panel.border     = element_rect(color = "black", fill = NA),
+    plot.title       = element_text(hjust = 0.5, size = 16),
+    axis.title       = element_text(size = 14),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key       = element_rect(fill = "white", color = NA),
+    legend.position = "right",
+    legend.title = element_text(size = 10),
+    legend.text  = element_text(size = 14),
+    legend.key.size = unit(0.6, "lines"),   # shrink key size
+    legend.spacing.y = unit(0.2, "lines") # reduce vertical spa
+  )
+```
+
+## Socioeconomic Factors
+
+The polychoric correlation coefficient is negative (-0.796) reflects the dataset's structure where SES level 1 represents the highest status. In practice, this confirms a very strong positive association: as educational attainment increases, socioeconomic standing improves significantly. Figure 5 suggests that socioeconomic barriers and educational access are deeply intertwined.
+```{r, echo=FALSE, fig.cap="Correlation between Educ and SES", fig.align = "center", warning=FALSE}
+library(polycor)
+# Both SES and Educ must be ordered factors
+longitudinal_last$SES_f <- factor(longitudinal_last$SES, ordered = TRUE)
+longitudinal_last$Educ_f <- factor(longitudinal_last$Educ, ordered = TRUE)
+
+# Calculate Polychoric Correlation
+poly_res <- polychor(longitudinal_last$SES_f, longitudinal_last$Educ_f, ML = FALSE, std.err = FALSE)
+
+table_data <- as.data.frame(table(longitudinal_last$Educ, longitudinal_last$SES))
+colnames(table_data) <- c("Education", "SES", "Count")
+
+# Plot a Heatmap
+ggplot(table_data, aes(x = Education, y = SES, fill = Count)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(title = "Heatmap: Education vs. SES ",
+       x = "Education Level (1 low -> 5 high)",
+       y = "SES Level (1 high -> 4 low)")
+```
+\newpage
+
+
+\textbf{Is the level of education significantly different between the two groups?}
+
+A Mann-Whitney U test was conducted to evaluate whether years of education significantly differed between diagnostic groups, serving as a proxy for cognitive reserve. In the longitudinal dataset, the level of education was significantly higher in the Nondemented group ($n = 72$, $M = 3.57$, $SD = 1.26$) compared to the Demented group ($n = 78$, $M = 2.97$, $SD = 1.24$), $W = \text{[Insert W value from R output]}$, $p = .003$. These findings indicate that individuals with higher educational attainment were significantly less likely to be classified with dementia within this cohort.
+
+```{r Wilcoxon Rank Sum Test, echo=FALSE}
+# Mann-Whitney U test
+# This tests if the 'rank' of Education differs between Demented and Non-Demented
+
+wilcox.test(as.numeric(longitudinal_last$Educ) ~ longitudinal_last$Group2, data = longitudinal_last)
+
+edu_comparison <- longitudinal_last %>%
+  group_by(Group2) %>%
+  summarise(
+    Count = n(),
+    Mean_Educ = mean(as.numeric(Educ), na.rm = TRUE),
+    Median_Educ = median(as.numeric(Educ), na.rm = TRUE),
+    SD_Educ = sd(as.numeric(Educ), na.rm = TRUE)
+  )
+
+print(edu_comparison)
+```
+
+\newpage
+
+# Data Preprocessing
+
+Before fine-tuning the models, several preliminary checks were performed to ensure data integrity; these included addressing missing values, verifying that post-imputation data maintained a distribution similar to the original, and implementing $10$-fold cross-validation to mitigate the risks associated with a small dataset
+
+## Spliting Train/Validation
+
+An initial 80/20 train–test split was used to evaluate model performance, but this approach produced accuracy values roughly 5% lower than those obtained with a more robust method. 
+
+```{r}
+# Separate before imputation and prevent data leakage 
+set.seed(123)
+train = sample(nrow(longitudinal_last),0.8*nrow(longitudinal_last))
+train_dat = longitudinal_last[train,]
+test_dat = longitudinal_last[-train,]
+```
+
+## Missing Vlues
+
+The dataset contained substantial missingness in several variables, including SES (8 values; $\approx 5.3 %$) and MMSE (1 values; $\approx 0.6\%$). 
+
+```{r, echo= FALSE}
+longitudinal_last <- longitudinal_last %>% select(-SES, -Educ)
+data_structure <- tibble(
+  Variable = names(longitudinal_last),
+  Type = longitudinal_last %>% map_chr(~ class(.x)[1]),
+  Missing = longitudinal_last %>% map_int(~ sum(is.na(.x))),
+  Unique_Values = longitudinal_last %>% map_int(~ n_distinct(.x)))
+
+kable(data_structure, caption = "Variable types and structure of the dataset.")
+```
+
+## Imputation
+
+We deal with the NA issue by replace the missing values with the corresponding values and we chose median imputation at this study.
+
+```{r}
+train_dat_imputed <- train_dat %>%
+  group_by(Educ) %>% 
+  mutate(SES = ifelse(is.na(SES), median(SES, na.rm = TRUE), SES)) %>%
+  mutate(MMSE = ifelse(is.na(MMSE), median(MMSE, na.rm = TRUE), MMSE))%>%
+  ungroup()
+
+train_ses_median <- median(train_dat_imputed$SES, na.rm = TRUE)
+test_dat$SES[is.na(test_dat$SES)] <- train_ses_median
+
+y_test <- as.factor(test_dat$Group2)
+```
+The distribution of SES remained stable post-imputation (8 missing values filled via grouped median). It confirm that the primary characteristics of the study population were preserved.
+\
+```{r echo = FALSE, fig.cap = "Distribution Check: Before vs. After Imputation.", fig.pos='H', fig.align='center', warning=FALSE}
+plot_imputed <- bind_rows(
+  train_dat %>% 
+    select(SES) %>% 
+    mutate(Status = "Before Impute"), 
+    
+  train_dat_imputed %>% 
+    select(SES) %>% 
+    mutate(Status = "After Imputed")  
+)
+
+# Build the plot 
+ggplot(plot_imputed, aes(x = SES, fill = Status)) +
+  geom_density(alpha = 0.7) +
+  facet_wrap(~Status) + # Splits into two boxes
+  theme_light() +
+  labs(title = "Density Comparison") +
+  guides(fill = "none")+
+  scale_fill_manual(values = c("Before Impute" = "#69b3a2", "After Imputed" = "#404080"))
+```
+
+## Cross-Validation
+
+To achieve a more reliable estimate, 10-fold cross-validation was was implemented: the training data were partitioned into ten folds, and all models were repeatedly trained and validated across all folds using a $\text{trainControl}$ specification with class probabilities enabled.
+
+```{r}
+set.seed(123)
+folds_long <- createFolds(train_dat_imputed$Group2, k = 10)
+
+# Set number of folds
+train_control<- trainControl(
+  method = "repeatedcv",
+  number = 10,
+  repeats = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final",
+  index = folds_long)
+```
+
+\newpage
+
+# Model
+
+Feature selection was performed to eliminate noise and prevent overfitting. Non-predictive identifiers (ID, Hand, Visits, Delay) and the outcome-defining variable CDR were removed to avoid information leakage and overfitting.
+
+## Performance Measure
+
+Five classification models were evaluated: Logistic Regression (baseline), Support Vector Machine (SVM), Decision Tree (DT), Random Forest (RF), and eXtreme Gradient Boosting (XGBoost).
+
+Our primary objective is to assess how effectively the models separate healthy individuals from those with dementia. We prioritized the Area Under the Receiver Operating Characteristic Curve (AUC) as our primary performance metric because it evaluates diagnostic potential across every possible threshold from 0.0 to 1.0. Given the neurodegenerative nature of Alzheimer’s, a high sensitivity (recall) is critical to ensure that patients are identified as early as possible. However, we also analyze Precision and F1-Score to manage the trade-off between early detection and the risk of misdiagnosis. By focusing on AUC, we can identify a model that maximizes the identification of true cases while minimizing delayed interventions for unhealthy adults.
+
+## Logistic Regression
+
+```{r, warning=FALSE}
+# Remove the columns created for EDA 
+train_dat_imputed <- train_dat_imputed %>%
+  select(Group2, M.F, Age, Educ, SES, MMSE, eTIV, nWBV, ASF)
+
+set.seed(1)
+logit_model <- train(
+  Group2 ~ .,
+  data      = train_dat_imputed,
+  method    = "glmnet",
+  family    = "binomial",
+  trControl = train_control,
+  metric  = "ROC")
+
+set.seed(1)
+logit_model1 <- train(
+  Group2 ~ .- eTIV - nWBV - ASF,
+  data      = train_dat_imputed,
+  method    = "glmnet",
+  family    = "binomial",
+  trControl = train_control,
+  metric  = "ROC")
+```
+
+```{r, include=FALSE}
+logit_pred <- predict(logit_model, test_dat)
+logit_conf <- confusionMatrix(logit_pred, y_test)
+
+logit_pred1 <- predict(logit_model1, test_dat)
+logit_conf1 <- confusionMatrix(logit_pred1, y_test)
+```
+
+## Support Vector Machine
+
+```{r}
+set.seed(1)
+svm_grid <- expand.grid(
+  C     = c(0.25,0.5,1),
+  sigma = c(0.005, 0.01, 0.02))
+
+svm_model <- train(
+  Group2 ~ . ,
+  data       = train_dat_imputed,
+  method     = "svmRadial",
+  trControl  = train_control,
+  preProcess = c("center", "scale"), 
+  tuneGrid   = svm_grid,
+  metric     = "ROC")
+
+svm_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data       = train_dat_imputed,
+  method     = "svmRadial",
+  trControl  = train_control,
+  preProcess = c("center", "scale"), 
+  tuneGrid   = svm_grid,
+  metric     = "ROC")
+```
+
+```{r, include = FALSE}
+svm_pred <- predict(svm_model, newdata = test_dat)
+svm_conf <- confusionMatrix(svm_pred, y_test)
+svm_acc <- svm_conf$overall["Accuracy"]
+best_C     <- svm_model$bestTune$C
+best_sigma <- svm_model$bestTune$sigma
+
+svm_cv_acc <- svm_model$results$Accuracy[
+  svm_model$results$C == best_C &
+  svm_model$results$sigma == best_sigma
+]
+svm_pred1 <- predict(svm_model1, newdata = test_dat)
+```
+
+## Decision Tree
+
+```{r DTmodel}
+tree_grid <- expand.grid(cp = seq(0, 0.02, length.out = 50))
+
+set.seed(1)
+tree_model <- train(
+  Group2 ~ .,
+  data = train_dat_imputed,
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid  = tree_grid, 
+  metric = "ROC")
+
+set.seed(1)
+tree_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data = train_dat_imputed,
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid  = tree_grid,
+  metric = "ROC")
+```
+```{r tree-conf, include = F}
+tree_pred <- predict(tree_model, newdata = test_dat)
+tree_conf <- confusionMatrix(tree_pred, y_test)
+tree_acc <- tree_conf$overall["Accuracy"]
+best_cp <- tree_model$bestTune$cp
+tree_cv_acc <- tree_model$results$Accuracy[
+  tree_model$results$cp == best_cp]
+
+tree_pred1 <- predict(tree_model1, newdata = test_dat)
+```
+
+## Random Forest Classifier
+```{r}
+set.seed(1)
+rf_model <- train(
+  Group2 ~ . ,
+  data      = train_dat_imputed,
+  method    = "rf",
+  trControl = train_control,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE,
+  metric = "ROC")
+
+set.seed(1)
+rf_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_dat_imputed,
+  method    = "rf",
+  trControl = train_control,
+  tuneGrid   = data.frame(mtry = c(1, 2, 3, 4, 5)), 
+  importance = TRUE,
+  metric = "ROC")
+```
+
+```{r, echo=FALSE}
+rf_pred <- predict(rf_model, newdata = test_dat)
+rf_cv_acc <- rf_model$results$Accuracy[ rf_model$results$mtry == rf_model$bestTune$mtry ] 
+rf_conf <- confusionMatrix(rf_pred, y_test)
+rf_acc <- rf_conf$overall["Accuracy"]
+rf_pred1 <- predict(rf_model1, newdata = test_dat)
+```
+## eXtreme Gradient Boosting
+```{r xgboost, results = 'hide',warning=FALSE, message=FALSE}
+grid_tune <- expand.grid(
+  nrounds = c(50, 100, 150), # number of trees
+  max_depth = c(2,3,4),
+  eta = c(0.01, 0.1, 0.3), #learning rate
+  gamma = c(0,1), # pruning draft
+  colsample_bytree = c(0.6, 0.8), # % of features used per tree
+  min_child_weight = c(1), # the larger the more conservative the model; can be used as a stop
+  subsample = 0.75) # used to prevent overfitting by sampling x% train
+
+set.seed(1)
+xgb_model <- train(
+  Group2 ~ . ,
+  data      = train_dat_imputed,
+  method    = "xgbTree",
+  trControl = train_control,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE, 
+  metric = "ROC")
+
+set.seed(1)
+xgb_model1 <- train(
+  Group2 ~ . - eTIV - nWBV - ASF,
+  data      = train_dat_imputed,
+  method    = "xgbTree",
+  trControl = train_control,
+  tuneGrid  = grid_tune,
+  verbose   = TRUE,
+  metric = "ROC")
+```
+
+```{r xgb-conf, include = FALSE}
+xgb_pred <- predict(xgb_model, newdata = test_dat)
+xgb_conf <- confusionMatrix(xgb_pred, y_test)
+xgb_accu <- xgb_conf$overall["Accuracy"]
+
+best_pars <- xgb_model$bestTune
+xgb_cv_acc <- xgb_model$results$Accuracy[
+  apply(xgb_model$results[, names(best_pars)], 1, function(row)
+    all(row == best_pars))
+]
+xgb_pred1 <- predict(xgb_model1, newdata = test_dat)
+```
+\newpage
+
+## Feature Importance
+
+The Mini-Mental State Examination (MMSE) score demonstrated superior predictive power, consistently ranking as the most influential diagnostic feature in both Random Forest and XGBoost models with an importance score of 100.
+
+```{r, echo=FALSE,fig.cap = "Varibale Importance of RF model", fig.pos='H', fig.align='center'}
+plot(varImp(rf_model), main = "Variable Importance: Random Forest")
+```
+
+```{r, echo=FALSE,fig.cap = "Varibale Importance of XGBoost model", fig.pos='H', fig.align='center'}
+plot(varImp(xgb_model), main = "Variable Importance: eXtreme Gradient Boosting")
+```
+
+\newpage
+
+# Results
+
+## Evaluation Metrics
+
+- **Accuracy**: The proportion of correctly classified result from the total instances.
+\
+- **Precision**: The ratio of correctly predicted positive rate to the total predicted positive rates. A good classifier close to value 1.
+\
+- **Recall**: The true positive rate. A good classifier close to value 1.
+\
+* **F1 Score**: The weighted average of Recall and Precision, which balances both metrics.
+
+Tables 4 and 5 present a performance comparison between the Full ML models and the NoMRI ML models. Both approaches demonstrate that the Support Vector Machine (SVM) algorithm achieved the highest accuracy at 83.33%. Notably, the Full ML SVM model attained the best recall score of 0.75, correctly identifying 75% of actual dementia cases in the test set. In contrast, all five algorithms in the NoMRI models achieved a consistent recall of 0.67.
+The performance differential is significant: while the Full ML SVM model demonstrated superior recall (0.75), the NoMRI SVM model maintained reasonable performance (0.67) using only demographic data and MMSE scores, which variables that are substantially more accessible in clinical settings. This trade-off highlights an important clinical consideration: the NoMRI approach could effectively serve as an accessible first-stage screening tool, with MRI-based models reserved for confirmatory diagnosis in cases requiring greater diagnostic certainty.
+\
+
+```{r, echo=FALSE, message=FALSE, warning =FALSE}
+compute_metrics <- function(pred, truth) {
+  
+  cm <- confusionMatrix(pred, truth, positive = "Demented")
+  
+  acc  <- cm$overall["Accuracy"]
+  prec <- cm$byClass["Precision"]
+  rec  <- cm$byClass["Recall"]
+  f1   <- cm$byClass["F1"]
+  
+  return(c(Accuracy = acc,
+           Precision = prec,
+           Recall = rec,
+           F1 = f1))
+}
+
+# Use the actual test labels from test_dat
+tree_metrics  <- compute_metrics(tree_pred,  y_test)
+rf_metrics    <- compute_metrics(rf_pred,    y_test)
+svm_metrics   <- compute_metrics(svm_pred,   y_test)
+xgb_metrics   <- compute_metrics(xgb_pred,   y_test)
+logit_metrics <- compute_metrics(logit_pred, y_test)
+
+results_table <- rbind(
+  "Decision Tree" = tree_metrics,
+  "Random Forest" = rf_metrics,
+  "SVM"           = svm_metrics,
+  "XGBoost"       = xgb_metrics,
+  "Logistic Reg." = logit_metrics
+)
+
+colnames(results_table) <- c("Accuracy", "Precision", "Recall", "F1")
+results_print <- as.data.frame(results_table)
+
+# Round Precision, Recall, F1-score to 2 decimals
+results_print$Accuracy  <- round(results_print$Accuracy, 4)
+results_print$Precision <- round(results_print$Precision, 2)
+results_print$Recall    <- round(results_print$Recall, 2)
+results_print$F1        <- round(results_print$F1, 2)
+
+# Convert Accuracy to percentage notation
+results_print[, "Accuracy"] <- sprintf("%.2f%%", results_print[, "Accuracy"] * 100)
+
+```
+
+```{r, include=FALSE}
+# Function to calculate, format, and display model results
+generate_performance_report <- function(pred_list, truth, title = "Performance comparison of ML models.") {
+  
+  # 1. Apply your compute_metrics function to every prediction in the list
+  # This handles tree_pred, tree_pred1, etc., automatically
+  metrics_list <- lapply(pred_list, function(p) {
+    # Ensure prediction and truth have same length
+    if(length(p) != length(truth)) return(rep(NA, 4)) 
+    compute_metrics(p, truth)
+  })
+  
+  # 2. Combine into a matrix and then a dataframe
+  results_df <- as.data.frame(do.call(rbind, metrics_list))
+  
+  # 3. Formatting (Rounding and Percentages)
+  # Keeping 4 decimals for Accuracy before percentage conversion
+  if(ncol(results_df) == 4) {
+    colnames(results_df) <- c("Accuracy", "Precision", "Recall", "F1")
+  }
+  
+  # 4. Final formatting for the Writing Sample
+  results_df %>%
+    mutate(
+      Accuracy = sprintf("%.2f%%", round(Accuracy, 4) * 100),
+      across(c(Precision, Recall, F1), ~round(.x, 2))
+    ) %>%
+    kable(caption = title, align = "c") %>%
+    kable_styling(full_width = FALSE, position = "center") %>%
+    row_spec(0, bold = TRUE)
+}
+
+```
+
+```{r, echo=FALSE}
+full_model_preds <- list(
+  "Logistic Reg." = logit_pred,
+  "SVM"           = svm_pred,
+  "Decision Tree" = tree_pred,
+  "Random Forest" = rf_pred,
+  "XGBoost"       = xgb_pred)
+
+generate_performance_report(full_model_preds, y_test, "Performance comparison of Full ML Models - longitudinal") 
+
+#Table without MRI variables
+half_model_preds <- list(
+  "Logistic Reg." = logit_pred1,
+  "SVM"           = svm_pred1,
+  "Decision Tree" = tree_pred1,
+  "Random Forest" = rf_pred1,
+  "XGBoost"       = xgb_pred1)
+
+generate_performance_report(half_model_preds, y_test, "Performance comparison of NoMRI ML Models - longitudinal") 
+```
+
+\newpage
+
+Note: A positive prediction indicates that the model predicts the patient has Alzheimer’s Disease (is Demented), whereas a negative prediction indicates the model predicts the patient does not have Alzheimer’s Disease (is Nondemented). All four evaluation metrics—Accuracy, Precision, Recall, and F1-score—are calculated from the fundamental confusion matrix components (TP, TN, FP, and FN). More detailed definitions of these terms are provided in Tables 6 and 7.
+
+\
+```{r prediction-tables, echo=FALSE, message=FALSE, warning=FALSE, fig.weight= 16, fig.height = 5, fig.align='center'}
+
+
+# 1. Data for Correct Predictions Table
+correct_predictions <- data.frame(
+  Term = c("TP", "TN"),
+  FullName = c("True Positive", "True Negative"),
+  ClinicalContext = c(
+    "The model predicts the patient is Demented, and the patient actually is Demented. (A successful diagnosis).",
+    "The model predicts the patient is Nondemented, and the patient actually is Nondemented. (A successful exclusion of the disease)."
+  ),
+  stringsAsFactors = FALSE
+)
+
+# 2. Data for Incorrect Predictions (Errors) Table
+incorrect_predictions <- data.frame(
+  Term = c("FP", "FN"),
+  FullName = c("False Positive", "False Negative"),
+  ClinicalContext = c(
+    "The model predicts the patient is Demented, but the patient actually is Nondemented. (A misdiagnosis).",
+    "The model predicts the patient is Nondemented, but the patient actually is Demented. (A missed diagnosis)."
+  ),
+  stringsAsFactors = FALSE
+)
+
+# 3.  (Correct Predictions)
+kable(
+  correct_predictions,
+  caption = "Correct Outcomes from the Confusion Matrix.",
+  align = "c",
+  col.names = c("Term", "Full Name", "Clinical Context")
+) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(3, width = "25em") %>% 
+  row_spec(0, bold = TRUE, background = "#D9EAD3")
+
+# 4. Create and style the second table (Incorrect Predictions)
+
+kable(
+  incorrect_predictions,
+  caption = "Incorrect Outcomes (Errors) from the Confusion Matrix.",
+  align = "c",
+  col.names = c("Term", "Full Name", "Clinical Context")
+) %>%
+  kable_styling(full_width = FALSE, position = "center") %>%
+  column_spec(3, width = "25em") %>% 
+  row_spec(0, bold = TRUE, background = "#F9C8C8")
+```
+
+
+\newpage
+
+## Confusion Matrix Analysis
+
+The individual confusion matrices (Figure 10) provide the underlying count data that justifies the calculated performance metrics (Table 4 $\&$ 5). The confusion matrix data visually and numerically validates the conclusion that SVM is the optimal model. Its ability to minimize False Negatives (FN = 3 for Full Model) is the defining factor, ensuring the highest rate of true dementia case detection necessary for early intervention.
+
+```{r combined-conf-matrices, echo = FALSE, message=FALSE, warning =FALSE, fig.height = 20.5, fig.width = 20, fig.pos = 't', fig.cap = "Individual Confusion Matrices"}
+plot_confusion_matrix <- function(pred, truth, title = "Confusion Matrix") {
+
+  
+  # desired order for the *labels* themselves
+  desired_levels <- c("Nondemented", "Demented")
+  
+  # factors for prediction/truth in logical order for the x-axis
+  truth_fac <- factor(truth, levels = desired_levels)
+  pred_fac  <- factor(pred,  levels = desired_levels)
+  
+  # confusion table
+  cm <- table(Predicted = pred_fac, True = truth_fac)
+  cm_df <- as.data.frame(cm)
+  
+  # *** for the y-axis, put Nondemented on TOP, Demented on BOTTOM ***
+  # (bottom -> top follows factor levels, so reverse them)
+  cm_df$True <- factor(cm_df$True, levels = rev(desired_levels))
+  
+  neg_level <- desired_levels[1]  # "Nondemented"
+  pos_level <- desired_levels[2]  # "Demented"
+  
+  cm_df <- cm_df %>%
+    mutate(
+      cell_type = case_when(
+        True == "Nondemented" & Predicted == "Nondemented" ~ "TN",
+        True == "Nondemented" & Predicted == "Demented"   ~ "FP",
+        True == "Demented"    & Predicted == "Nondemented" ~ "FN",
+        True == "Demented"    & Predicted == "Demented"    ~ "TP",
+        TRUE ~ ""
+      ),
+      label = paste0(cell_type, " = ", Freq)
+    )
+  
+  ggplot(cm_df, aes(x = Predicted, y = True, fill = Freq)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = label), size = 4, fontface = "bold") +
+    scale_fill_gradient(low = "#FFFFCC", high = "#FF9933") +
+    labs(
+      title = title,
+      x = "Predicted Label",
+      y = "True Label"
+    ) +
+    theme_minimal(base_size = 14)
+}
+
+# library(your_plotting_package) # e.g., library(ggplot2) if your function uses it
+
+# Assuming 'plot_confusion_matrix' generates a ggplot object, assign each plot to a variable.
+
+# 1. Generate the individual plot objects and center their titles
+center_title_plot <- function(p, title_text) {
+  # Re-run your original plot function, then modify the title alignment
+  p <- plot_confusion_matrix(p, y_test, title = title_text)
+  
+  # Check if p is a ggplot object before applying theme changes
+  if (inherits(p, "ggplot")) {
+    p <- p + theme(plot.title = element_text(hjust = 0.5), face = "bold")
+  }
+  return(p)
+}
+
+p1 <- center_title_plot(tree_pred, "Full Model – Decision Tree")
+p11 <- center_title_plot(tree_pred1, "NoMRI Model – Decision Tree")
+p2 <- center_title_plot(rf_pred, "Full Model – Random Forest")
+p22 <- center_title_plot(rf_pred1, "NoMRI Model – Random Forest")
+p3 <- center_title_plot(xgb_pred, "Full Model – XGBoost")
+p33 <- center_title_plot(xgb_pred1, "NoMRI Model – XGBoost")
+p4 <- center_title_plot(svm_pred, "Full Model – SVM")
+p44 <- center_title_plot(svm_pred1, "NoMRI Model – SVM")
+p5 <- center_title_plot(logit_pred, "Full Model – Logistic Regression")
+p55 <- center_title_plot(logit_pred1, "NoMRI Model – Logistic Regression")
+
+# 2. Use patchwork to combine them into a 2x3 layout
+# The '+' operator adds plots; the 'plot_layout' sets the structure.
+# 'plot_spacer()' is used to fill the empty 6th spot.
+combined_plots <- (p5 + p55) / (p4 + p44) / (p1 + p11)/ (p2 + p2) / (p3 + p33)
+
+# print the combined plot
+combined_plots
+```
+
+\newpage
+
+## AUC
+
+```{r, echo=FALSE}
+
+
+get_pred_probs <- function(model, test_data) {
+  # Caret models use type = "prob"
+  pred_probs <- predict(model, test_dat, type = "prob")
+  
+  # Extract probability for positive class (column 2)
+  # Assuming your classes are ordered: Non-demented (1), Demented (2)
+  pred_probs <- pred_probs[, 2]
+  
+  return(pred_probs)
+}
+# Get probabilities for each model
+dt_probs <- get_pred_probs(tree_model, test_dat)
+rf_probs <- get_pred_probs(rf_model, test_dat)
+svm_probs <- get_pred_probs(svm_model, test_dat)
+xgb_probs <- get_pred_probs(xgb_model, test_dat)
+lr_probs <- get_pred_probs(logit_model, test_dat)
+
+# Combine into list
+pred_list <- list(
+  dt_probs,
+  rf_probs,
+  svm_probs,
+  xgb_probs,
+  lr_probs
+)
+
+model_names <- c("Decision Tree", "Random Forest", "SVM", "XGBoost", "Logistic Reg")
+
+
+
+ROC_curve_compare <- function(actual, pred_list, model_names) {
+  library(pROC)
+  
+  # Create plot
+  plot(NULL, xlim = c(0, 1), ylim = c(0, 1),
+       xlab = "False Positive Rate",
+       ylab = "True Positive Rate",
+       main = "ROC Curves - Model Comparison")
+  
+  # Define colors
+  colors <- c("blue", "red", "green", "orange", "purple")
+  
+  # Plot each model's ROC curve
+  for (i in seq_along(pred_list)) {
+    roc_obj <- roc(actual, pred_list[[i]])
+    lines(roc_obj, col = colors[i], lwd = 2)
+    auc_val <- auc(roc_obj)
+    print(paste(model_names[i], "AUC:", round(auc_val, 3)))
+  }
+  
+  # Add diagonal reference line
+  lines(c(0, 1), c(0, 1), col = "black", lty = 2, lwd = 1)
+  
+  # Add legend
+  legend("lower right", legend = model_names, col = colors, lwd = 2)
+}
+
+# Get predictions for all models
+dt_pred <- predict(tree_model, test_dat, probability = TRUE)
+rf_pred <- predict(rf_model, test_dat, probability = TRUE)
+svm_pred <- predict(svm_model, test_dat, probability = TRUE)
+xgb_pred <- predict(xgb_model, test_dat, probability = TRUE)
+lr_pred <- predict(logit_model, test_dat, probability = TRUE)
+
+# Combine predictions
+pred_list2 <- list(
+  attr(tree_model, "probabilities")[, 2],
+  attr(rf_pred, "probabilities")[, 2],
+  attr(svm_pred, "probabilities")[, 2],
+  attr(xgb_pred, "probabilities")[, 2],
+  attr(logit_model, "probabilities")[, 2]
+)
+
+# Plot comparison
+ROC_curve_compare(y_test, pred_list, model_names)
+
+
+```
+
+
+# Conclusion
+## Unique Approach
+
+This study employs a dual-model approach to compare accessible clinical variables (demographics, MMSE, education) with a comprehensive model incorporating neuroimaging metrics (brain volume). This comparative framework tests a resource-efficient screening approach using widely available clinical data while investigating whether MRI data improves model performance. Furthermore, the dual-model framework provides a foundation that could potentially be extended to other neurodegenerative diseases using MRI and cognitive assessments, warranting further development and validation.
+
+## Implementation
+idk
+
+## Limitation
+
+The limited dataset size (150 subjects) constrains model complexity. The overlapping ranges of feature values between demented and nondemented groups also reduce classification clarity. More granular feature engineering and a larger sample size would better distinguish group differences and improve model performance. A key limitation is the potential impact of data cleaning and preprocessing protocols on model performance. The models were trained in R-Studio, where algorithm default tuning parameters may differ from those in other programming languages. This suggests that model performance could potentially improve through optimized hyperparameter tuning.
+
+## Further Research
+
+The exploratory data analysis (EDA) section can be strengthened by integrating findings from published reserach on Alzheimer’s diseasepathology, risk factors, and the relationship between aging and cognitive decline. This integration would enable more rigorous interpretation of observed patterns and support evidence-base conclusions.
+
+Out analysis identified MMSE, nWBV and Age as clinically relevant predictors of dementia. Future studies should expand these findings by identifying additional biomarkers and imaging features to improve early detection and intervention strategies.
+
+Once the NoMRI model achieves sufficient clinical accuracy, a web-based application using Common Gateway Interface (CGI) should be developed to enable clinicians to input patient data and obtain dementia risk predictions in clinical practice.
+
+Model performance can be further improved through enhanced data preprocessing protocols and systematic hyperparameter optimization. Prioritizing these refinements would increase both accuracy and recall metrics, ultimately contributing to more reliable early detection of dementia and supporting better clinical decision-making.
+
+# Acknowledgements
+## Reference
+
+1. Zhong, T., Li, S., Liu, P., Wang, Y., & Chen, L. (2024).
+The impact of education and occupation on cognitive impairment: A cross-sectional study in China.
+Frontiers in Aging Neuroscience, 16, 1435626. https://doi.org/10.3389/fnagi.2024.1435626
+
+2. Livingston G, et al. (2020). Dementia prevention, intervention, and care: 2020 report of the Lancet Commission. 
+The Lancet.
+
+3. Ritchie, K., & Kildea, D. (1995).
+Is senile dementia “age-related” or “ageing-related”? Evidence from a meta-analysis of dementia prevalence in the oldest old.
+The Lancet, 346(8980), 931–934. https://doi.org/10.1016/S0140-6736(95)91556-7
+
+4. Alatrany, A. S., Khan, W., Hussain, A., & others. (2024).
+An explainable machine learning approach for Alzheimer’s disease classification.
+Scientific Reports, 14, 2637. https://doi.org/10.1038/s41598-024-51985-w
+
+5. World Health Organization. (2019).
+Risk reduction of cognitive decline and dementia: WHO guidelines.
+World Health Organization.
+
+6. NHS England. (2016).
+The Well Pathway for Dementia.
+https://www.england.nhs.uk/mentalhealth/wp-content/uploads/sites/29/2016/03/dementia-well-pathway.pdf
+
+7. Rasmussen, J., & Langerman, H. (2019).
+Alzheimer’s disease: Why we need early diagnosis.
+Degenerative Neurology and Neuromuscular Disease, 9, 123–130.
+https://doi.org/10.2147/DNND.S228939
