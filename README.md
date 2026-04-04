@@ -14,6 +14,6 @@ This analysis aims to investigate whether cognitive tests and demographic proxie
 
 This study used data from the Open Access Series of Imaging Studies (OASIS) to examine the diagnostic performance of multiple machine learning algorithms for dementia detection under two predictive settings: a full approach that included demographic, cognitive, and MRI-derived variables, and a cost-effective approach that excluded all neuroimaging measures. Both cross-sectional and longitudinal cohorts were analyzed, with binary classifiers trained to predict dementia status using an 80/20 train–test split. Five classifiers were compared: logistic regression, decision trees (DT), random forests (RF), support vector machines (SVM), and extreme gradient boosting (XGBoost). Model performance was evaluated using accuracy, precision, recall, F1-score, and receiver operating characteristic curve (ROC) analysis. Comparative analyses focused on the impact of removing MRI biomarkers and demographic differences between demented and non-demented groups. 
 
-The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full)
+The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full).
 
-The full implementation and analysis workflow is available [here](./131_REPORT/rmd-file/MLAD.pdf).
+The full implementation and analysis workflow is available [here](/Rmd-file/MLAD.Rmd).
