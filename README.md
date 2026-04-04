@@ -16,4 +16,4 @@ This study used data from the Open Access Series of Imaging Studies (OASIS) to e
 
 The original study is available at [here](https://www.frontiersin.org/journals/public-health/articles/10.3389/fpubh.2022.853294/full)
 
-The full implementation and analysis workflow is available [here](../Rmd-file/MLAD.pdf).
+The full implementation and analysis workflow is available [here](./MLAD.pdf).
