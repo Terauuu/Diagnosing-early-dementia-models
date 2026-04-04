@@ -985,98 +985,11 @@ combined_plots
 
 \newpage
 
-## AUC
-
-```{r, echo=FALSE}
-
-
-get_pred_probs <- function(model, test_data) {
-  # Caret models use type = "prob"
-  pred_probs <- predict(model, test_dat, type = "prob")
-  
-  # Extract probability for positive class (column 2)
-  # Assuming your classes are ordered: Non-demented (1), Demented (2)
-  pred_probs <- pred_probs[, 2]
-  
-  return(pred_probs)
-}
-# Get probabilities for each model
-dt_probs <- get_pred_probs(tree_model, test_dat)
-rf_probs <- get_pred_probs(rf_model, test_dat)
-svm_probs <- get_pred_probs(svm_model, test_dat)
-xgb_probs <- get_pred_probs(xgb_model, test_dat)
-lr_probs <- get_pred_probs(logit_model, test_dat)
-
-# Combine into list
-pred_list <- list(
-  dt_probs,
-  rf_probs,
-  svm_probs,
-  xgb_probs,
-  lr_probs
-)
-
-model_names <- c("Decision Tree", "Random Forest", "SVM", "XGBoost", "Logistic Reg")
-
-
-
-ROC_curve_compare <- function(actual, pred_list, model_names) {
-  library(pROC)
-  
-  # Create plot
-  plot(NULL, xlim = c(0, 1), ylim = c(0, 1),
-       xlab = "False Positive Rate",
-       ylab = "True Positive Rate",
-       main = "ROC Curves - Model Comparison")
-  
-  # Define colors
-  colors <- c("blue", "red", "green", "orange", "purple")
-  
-  # Plot each model's ROC curve
-  for (i in seq_along(pred_list)) {
-    roc_obj <- roc(actual, pred_list[[i]])
-    lines(roc_obj, col = colors[i], lwd = 2)
-    auc_val <- auc(roc_obj)
-    print(paste(model_names[i], "AUC:", round(auc_val, 3)))
-  }
-  
-  # Add diagonal reference line
-  lines(c(0, 1), c(0, 1), col = "black", lty = 2, lwd = 1)
-  
-  # Add legend
-  legend("lower right", legend = model_names, col = colors, lwd = 2)
-}
-
-# Get predictions for all models
-dt_pred <- predict(tree_model, test_dat, probability = TRUE)
-rf_pred <- predict(rf_model, test_dat, probability = TRUE)
-svm_pred <- predict(svm_model, test_dat, probability = TRUE)
-xgb_pred <- predict(xgb_model, test_dat, probability = TRUE)
-lr_pred <- predict(logit_model, test_dat, probability = TRUE)
-
-# Combine predictions
-pred_list2 <- list(
-  attr(tree_model, "probabilities")[, 2],
-  attr(rf_pred, "probabilities")[, 2],
-  attr(svm_pred, "probabilities")[, 2],
-  attr(xgb_pred, "probabilities")[, 2],
-  attr(logit_model, "probabilities")[, 2]
-)
-
-# Plot comparison
-ROC_curve_compare(y_test, pred_list, model_names)
-
-
-```
-
-
 # Conclusion
+
 ## Unique Approach
 
 This study employs a dual-model approach to compare accessible clinical variables (demographics, MMSE, education) with a comprehensive model incorporating neuroimaging metrics (brain volume). This comparative framework tests a resource-efficient screening approach using widely available clinical data while investigating whether MRI data improves model performance. Furthermore, the dual-model framework provides a foundation that could potentially be extended to other neurodegenerative diseases using MRI and cognitive assessments, warranting further development and validation.
-
-## Implementation
-idk
 
 ## Limitation
 
@@ -1093,6 +1006,7 @@ Once the NoMRI model achieves sufficient clinical accuracy, a web-based applicat
 Model performance can be further improved through enhanced data preprocessing protocols and systematic hyperparameter optimization. Prioritizing these refinements would increase both accuracy and recall metrics, ultimately contributing to more reliable early detection of dementia and supporting better clinical decision-making.
 
 # Acknowledgements
+
 ## Reference
 
 1. Zhong, T., Li, S., Liu, P., Wang, Y., & Chen, L. (2024).
