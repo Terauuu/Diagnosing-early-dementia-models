@@ -55,7 +55,7 @@ Early detection of Alzheimer’s Disease (AD) is crucial for timely intervention
 This study used data from the Open Access Series of Imaging Studies (OASIS) to examine the longitudinal diagnostic performance of multiple machine learning algorithms for dementia detection under two predictive settings: a full approach that included demographic, cognitive, and MRI-derived variables, and a cost-effective approach that excluded all neuroimaging measures. Model performance was evaluated using accuracy, precision, recall, F1-score, and receiver operating characteristic curve (ROC) analysis. Comparative analyses focused on the impact of removing MRI biomarkers and demographic differences between demented and non-demented groups. 
 
 \
-A Mann-Whitney U test revealed that higher educational attainment was significantly associated with nondemented status in longitudinal (p = .003) cohorts. Feature importance rankings consistently identified the Mini-Mental State Examination (MMSE) score as the dominant diagnostic predictor in the RF and XGBoost models (Importance = 100). Among all classifiers, the Support Vector Machine (SVM) algorithm demonstrated the highest clinical safety performance. This predictive approach achieved accuracy of 83.33% for both Full and NoMRI models. The mean ROC was approximately 0.804 across four SVM configurations.
+A Mann-Whitney U test revealed that higher educational attainment was significantly associated with nondemented status in longitudinal (p = .003) cohorts. Feature importance rankings consistently identified the Mini-Mental State Examination (MMSE) score as the dominant diagnostic predictor in the RF and XGBoost models (Importance = 100). Among all classifiers, the Support Vector Machine (SVM) algorithm demonstrated the highest clinical safety performance. This predictive approach achieved accuracy of 83.33% for both Full and NoMRI models.
 
 \
 This work demonstrated that machine learning algorithms using MRI-excluded metrics maintain strong predictive performance and that the MMSE is a consistent predictor of dementia status. These findings highlight the feasibility of proxy-based methods for early identification using cognitive and demographic measurements alone. Clinically, such models may provide interpretable risk signals to support clinicians’ decisions regarding follow-up screening, monitoring, and care planning when neuroimaging data are unavailable, thereby enhancing diagnostic accessibility at scale. Future research will confirm these results in larger datasets and explore additional cost-effective indicators to improve early Alzheimer’s disease detection.
@@ -986,6 +986,8 @@ combined_plots
 \newpage
 
 # Conclusion
+
+The superior performance of the baseline Logistic Regression suggests a primarily linear relationship between the clinical predictors and dementia status. In the context of small cohort, the lower complexity of SVM and Logistic models likely optimized the bias-variance tradeoff, offering more robust interpretation than complex methods. These results indicate that for early AD detection within this dataset, a simpler,  interpretable model may be more reliable than complex "black-box" algorithms.
 
 ## Unique Approach
 
